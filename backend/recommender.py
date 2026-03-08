@@ -22,9 +22,9 @@ results = recommender.recommend(user_id = 69, top_n = 10)
 '''
 
 
-import mysql.connector
 import pandas as pd
 import numpy as np
+import mysql.connector
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.cluster import KMeans
@@ -66,6 +66,10 @@ class TravelRecommender:
 
         conn.close()
 
+        # fix for new user uuid
+        self.users_df["user_id"] = self.users_df["user_id"].astype(str)
+        self.ratings_df["user_id"] = self.ratings_df["user_id"].astype(str)
+
         if self.users_df.empty:
             raise ValueError("No users found in database")
 
@@ -82,6 +86,10 @@ class TravelRecommender:
     def _build_content_model(self):
         # features = self.users_df.drop(columns=["id", "latitude", "longitude"], errors="ignore")
         features = self.users_df.drop(columns=["user_id", "destination_id", "latitude", "longitude", "cluster"], errors="ignore")
+
+        # keep only numeric columns
+        features = features.select_dtypes(include=[np.number])
+
         features_scaled = self.scaler.fit_transform(features)
         self.content_similarity_matrix = cosine_similarity(features_scaled)
 
@@ -90,6 +98,10 @@ class TravelRecommender:
     def _build_clustering(self):
         # features = self.users_df.drop(columns=["id", "latitude", "longitude"], errors="ignore")
         features = self.users_df.drop(columns=["user_id", "destination_id", "latitude", "longitude", "cluster"], errors="ignore")
+
+        # keep only numeric columns
+        features = features.select_dtypes(include=[np.number])
+
         scaled = self.scaler.transform(features)
         k = max(2, int(np.sqrt(len(self.users_df) / 2)))
         kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
@@ -199,7 +211,7 @@ class TravelRecommender:
             score = self._hybrid_score(user_idx, idx)
 
             scores.append({
-                "user_id": int(self.users_df.loc[idx, "user_id"]),
+                "user_id": str(self.users_df.loc[idx, "user_id"]),          # change
                 "score": float(score)
             })
 
