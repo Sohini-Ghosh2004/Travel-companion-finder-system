@@ -17,6 +17,17 @@
 - /api/login
 - /api/logout
 
+[+] group
+- /api/groups
+- /api/create-group
+- /api/join-group
+- /api/update-group
+- /api/delete-group
+- /api/group/allow
+- /api/group/reject
+- /api/group/leave
+- /api/group/requests
+
 [+] model:
 - /api/recommend
 
@@ -134,7 +145,7 @@ def token_required(f):
 
 ''' CRUD '''
 @app.route("/api/create-account", methods = ["POST"])
-@limiter.limit("30 per minute")
+@limiter.limit("30 per hour")
 def create_account():
     try:
         data = request.get_json()
@@ -153,6 +164,7 @@ def create_account():
         if missing:
             return jsonify({"error": "Invalid request"}), 400
 
+
         conn = get_db_connection()
         cursor = conn.cursor(dictionary = True)
 
@@ -163,7 +175,7 @@ def create_account():
             return jsonify({"error": "Username already exists"}), 409
 
         # generate uuid
-        user_id = str(uuid.uuid4()).replace("-", "")
+        user_id = str(uuid.uuid4())
 
         password_hash = generate_password_hash(data["password"])
 
@@ -222,6 +234,10 @@ def create_account():
 def update_account():
     try:
         data = request.get_json()
+
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
+
         user_id = request.user_id
 
         conn = get_db_connection()
@@ -284,10 +300,13 @@ def delete_account():
 
 
 @app.route("/api/login",methods = [ "POST" ])
-@limiter.limit("30 per minute")
+@limiter.limit("30 per hour")
 def login():
     try:
         data = request.get_json()
+
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
 
         conn = get_db_connection()
         cursor = conn.cursor(dictionary = True)
@@ -346,6 +365,11 @@ def logout():
 
 
 ''' to do '''
+# display name, age, curr location, bio, travel history
+@app.route("/api/profile", methods = [ "GET" ])
+def profile():
+    pass
+
 @app.route("/api/reset-passwd", methods = [ "POST" ])
 def reset_passwd():
     pass
@@ -358,30 +382,470 @@ def reset_passwd():
 
 ''' CRUD '''
 @app.route("/api/create-group", methods = [ "POST" ])
+@token_required
 def create_group():
-    pass
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
+
+        user_id = request.user_id
+        max_members = data.get("max_members", 4)
+        group_id = str(uuid.uuid4())
+        month = data.get("travel_month")
+
+
+        if month is not None:
+            if not isinstance(month, int) or month < 1 or month > 12:
+                return jsonify({"error": "Invalid travel month"}), 400
+
+        if not isinstance(max_members, int):
+            return jsonify({"error": "max_members must be integer"}), 400
+
+        if max_members is not None and (max_members < 2 or max_members > 10):
+            return jsonify({"error": "Group size must be between 2 and 10"}), 400
+
+        if ((data.get("group_name") and len(data["group_name"]) > 100) or (data.get("description") and len(data["description"]) > 500) or (data.get("destination_name") and len(data["destination_name"]) > 100)):
+            return jsonify({"error":"string too long"}), 400
+        
+        if not data.get("group_name") or not data.get("destination_name"):
+            return jsonify({"error": "group_name and destination_name required"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+        INSERT INTO travel_groups (group_id, group_name, destination_name, travel_month, description, max_members, created_by) VALUES (%s,%s,%s,%s,%s,%s,%s)""", (
+            group_id,
+            data["group_name"],
+            data["destination_name"],
+            month,
+            data.get("description"),
+            max_members,
+            user_id
+        ))
+
+        cursor.execute("""INSERT INTO group_members (group_id, user_id, role) VALUES (%s,%s,'admin')""",(group_id,user_id))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"message":"Group created","group_id": group_id}), 201
+
+    except Exception as e:
+        return jsonify({"error":str(e)}), 500
+
 
 
 @app.route("/api/join-group", methods = [ "POST" ])
+@token_required
 def join_group():
-    pass
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
+
+        user_id = request.user_id
+        group_id = data["group_id"]
+
+        if not group_id:
+            return jsonify({"error": "group_id required"}), 400
+
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary = True)
+
+        # check group exists
+        cursor.execute("SELECT max_members FROM travel_groups WHERE group_id=%s",(group_id,))
+        group = cursor.fetchone()
+
+        if not group:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Group not found"}), 404
+
+        # check if already member
+        cursor.execute("SELECT 1 FROM group_members WHERE group_id=%s AND user_id=%s",(group_id, user_id))
+
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Already a member"}), 400
+
+        # check existing join request
+        cursor.execute("SELECT status FROM group_join_requests WHERE group_id=%s AND user_id=%s",(group_id, user_id))
+
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Join request already exists"}), 400
+
+        # count current members
+        cursor.execute("SELECT COUNT(*) AS members FROM group_members WHERE group_id=%s",(group_id,))
+        members = cursor.fetchone()["members"]
+
+        # check capacity
+        if members >= group["max_members"]:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Group is already full"}), 400
+
+        request_id = str(uuid.uuid4())
+
+        cursor.execute("""INSERT INTO group_join_requests (request_id, group_id, user_id) VALUES (%s,%s,%s)""",(request_id, group_id, user_id))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"message": "Join request sent"}), 200
+
+    except Exception as e:
+        return jsonify({"error":str(e)}), 500
+
 
 
 @app.route("/api/update-group", methods = [ "PUT" ])
+@token_required
 def update_group():
-    pass
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
+
+        user_id = request.user_id
+        group_id = data["group_id"]
+        month = data.get("travel_month")
+        group_name = data.get("group_name")
+        description = data.get("description")
+        destination = data.get("destination_name")
+        max_members = data.get("max_members")
+
+        if not group_id:
+            return jsonify({"error": "group_id required"}), 400
+
+        if ((data.get("group_name") and len(data["group_name"]) > 100) or (data.get("description") and len(data["description"]) > 500) or (data.get("destination_name") and len(data["destination_name"]) > 100)):
+            return jsonify({"error":"string too long"}), 400
+
+        if month is not None:
+            if not isinstance(month, int) or month < 1 or month > 12:
+                return jsonify({"error": "Invalid travel month"}), 400
+
+        if max_members is not None:
+            if not isinstance(max_members, int):
+                return jsonify({"error": "max_members must be integer"}), 400
+            if max_members < 2 or max_members > 10:
+                return jsonify({"error": "Group size must be between 2 and 10"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary = True)
+
+
+        cursor.execute("""SELECT role FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
+        role = cursor.fetchone()
+
+        if not role or role["role"] != "admin":
+            return jsonify({"error": "Only admin can update group"}), 403
+
+
+        # return the first non-null value in a list
+        cursor.execute("""
+            UPDATE travel_groups SET group_name = COALESCE(%s, group_name), description = COALESCE(%s, description), destination_name = COALESCE(%s, destination_name),travel_month = COALESCE(%s, travel_month),
+            max_members = COALESCE(%s, max_members) WHERE group_id = %s """, (group_name, description, destination, month, max_members, group_id))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"message": "Group updated"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 
 @app.route("/api/delete-group", methods = [ "DELETE" ])
+@token_required
 def delete_group():
-    pass
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
 
 
-# ========== model ==============
+        user_id = request.user_id
+        group_id = data["group_id"]
+
+        if not group_id:
+            return jsonify({"error": "group_id required"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary = True)
+
+        cursor.execute("""SELECT role FROM group_members WHERE group_id=%s AND user_id=%s """,(group_id,user_id))
+        role = cursor.fetchone()
+
+        if not role or role["role"] != "admin":
+            return jsonify({"error":"Only admin can delete group"}), 403
+
+        cursor.execute("DELETE FROM travel_groups WHERE group_id=%s",(group_id,))
+
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"message":"Group deleted"}), 200
+
+    except Exception as e:
+        return jsonify({"error":str(e)}), 500
+
+
+
+@app.route("/api/groups", methods=[ "GET" ])
+@token_required
+def get_groups():
+    try:
+        user_id = request.user_id
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("""
+        SELECT g.group_id, g.group_name, g.destination_name, g.travel_month, g.description, g.max_members, u.username AS admin,COUNT(m.user_id) AS current_members,
+        MAX(CASE WHEN m.user_id = %s THEN 1 ELSE 0 END) AS joined,
+        MAX(CASE WHEN r.user_id = %s AND r.status='pending' THEN 1 ELSE 0 END) AS request_pending
+        FROM travel_groups g
+        LEFT JOIN group_members m 
+            ON g.group_id = m.group_id
+        LEFT JOIN users u
+            ON g.created_by = u.user_id
+        LEFT JOIN group_join_requests r ON g.group_id = r.group_id AND r.user_id=%s
+        GROUP BY g.group_id, g.group_name, g.destination_name, g.travel_month, g.description, g.max_members, u.username 
+        ORDER BY g.created_at DESC""", (user_id, user_id, user_id))
+
+        groups = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({"groups": groups}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+@app.route("/api/group/allow", methods=[ "POST" ])
+@token_required
+def allow_request():
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
+
+        admin_id = request.user_id
+        group_id = data["group_id"]
+        user_id = data["user_id"]
+
+        if not group_id or not user_id:
+            return jsonify({"error": "group_id and user_id required"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary = True)
+
+        cursor.execute("""SELECT role FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, admin_id))
+        role = cursor.fetchone()
+
+        if not role or role["role"] != "admin":
+            return jsonify({"error": "Only admin allowed"}), 403
+
+
+        # verify request exists
+        cursor.execute("""SELECT status FROM group_join_requests WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
+        req = cursor.fetchone()
+
+        if not req:
+            return jsonify({"error": "Request not found"}), 404
+
+        if req["status"] != "pending":
+            return jsonify({"error": "Request already processed"}), 400
+
+        # check membership
+        cursor.execute("""SELECT 1 FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
+
+        if cursor.fetchone():
+            return jsonify({"error": "User already a member"}), 400
+
+        # check group capacity
+        cursor.execute("""SELECT COUNT(*) AS members FROM group_members WHERE group_id=%s """, (group_id,))
+        members = cursor.fetchone()["members"]
+
+        cursor.execute("""SELECT max_members FROM travel_groups WHERE group_id=%s """, (group_id,))
+        group = cursor.fetchone()
+
+        if not group:
+            return jsonify({"error": "Group not found"}), 404
+
+        if members >= group["max_members"]:
+            return jsonify({"error": "Group is full"}), 400
+
+        cursor.execute("""INSERT INTO group_members (group_id, user_id, role) VALUES (%s,%s,'member') """, (group_id, user_id))
+        cursor.execute("""UPDATE group_join_requests SET status='approved' WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"message": "User approved"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+@app.route("/api/group/reject", methods=[ "POST" ])
+@token_required
+def reject_request():
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
+
+        admin_id = request.user_id
+
+        group_id = data["group_id"]
+        user_id = data["user_id"]
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary = True)
+
+        cursor.execute("""SELECT role FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, admin_id))
+        role = cursor.fetchone()
+
+        if not role or role["role"] != "admin":
+            return jsonify({"error": "Only admin allowed"}), 403
+        
+
+        cursor.execute("""SELECT status FROM group_join_requests WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
+        req = cursor.fetchone()
+
+        if not req:
+            return jsonify({"error": "Request not found"}), 404
+        
+        if req["status"] != "pending":
+            return jsonify({"error": "Request already processed"}), 400
+
+        cursor.execute("""UPDATE group_join_requests SET status='rejected' WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"message": "Request rejected"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+@app.route("/api/group/leave", methods=[ "POST" ])
+@token_required
+def leave():
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
+
+        user_id = request.user_id
+        group_id = data["group_id"]
+
+        if not group_id:
+            return jsonify({"error": "group_id required"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary = True)
+
+        # check membership
+        cursor.execute("""SELECT role FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
+        member = cursor.fetchone()
+
+        if not member:
+            return jsonify({"error": "You are not a member of this group"}), 400
+
+        # admin cannot leave
+        if member["role"] == "admin":
+            return jsonify({"error": "Admin cannot leave the group"}), 400
+
+        # remove member
+        cursor.execute("""DELETE FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
+
+        # rm old join request
+        cursor.execute("""DELETE FROM group_join_requests WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"message": "Left group successfully"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# list the join requests
+@app.route("/api/group/requests", methods=[ "GET" ])
+@token_required
+def group_requests():
+    try:
+        admin_id = request.user_id
+        group_id = request.args.get("group_id")
+
+        if not group_id:
+            return jsonify({"error": "group_id required"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # verify admin
+        cursor.execute("""SELECT role FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, admin_id))
+
+        role = cursor.fetchone()
+
+        if not role or role["role"] != "admin":
+            return jsonify({"error": "Only admin allowed"}), 403
+
+
+        # get pending requests
+        cursor.execute("""
+        SELECT r.user_id, u.username, r.requested_at
+        FROM group_join_requests r JOIN users u ON r.user_id = u.user_id WHERE r.group_id=%s AND r.status='pending' ORDER BY r.requested_at ASC""", (group_id,))
+
+        requests = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({"group_id": group_id, "pending_requests": requests}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+''' ========== model ============== '''
 
 # recomend top n users
 @app.route("/api/recommend", methods =[ "POST" ])
-@limiter.limit("30 per minute")
+@limiter.limit("30 per hour")
 @token_required
 def recommend():
     try:
@@ -391,7 +855,7 @@ def recommend():
             return jsonify({"error": "No JSON body provided"}), 400
 
         user_id = request.user_id   # from jwt
-        top_n = data.get("top_n", 5)
+        top_n = int(data.get("top_n", 5))
 
         # call model
         results = recommender.recommend(user_id = user_id, top_n = int(top_n)) or []

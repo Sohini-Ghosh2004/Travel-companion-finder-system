@@ -5,7 +5,7 @@ USE travel;
 
 CREATE TABLE destination (
     destination_id INT PRIMARY KEY AUTO_INCREMENT,
-    destination_name VARCHAR(100),
+    destination_name VARCHAR(100) UNIQUE NOT NULL,
     latitude DECIMAL(9,6),
     longitude DECIMAL(9,6)
 );
@@ -22,30 +22,30 @@ CREATE TABLE users (
     password_hash VARCHAR(255) NOT NULL,
     age INT,
     budget INT,
-    beach TINYINT(1),
-    trekking TINYINT(1),
-    culture TINYINT(1),
-    adventure TINYINT(1),
+    beach TINYINT(1) DEFAULT 0,
+    trekking TINYINT(1) DEFAULT 0,
+    culture TINYINT(1) DEFAULT 0,
+    adventure TINYINT(1) DEFAULT 0,
     travel_month INT,
-    destination_id INT,
+    destination_id INT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (destination_id) REFERENCES destination(destination_id)
+    FOREIGN KEY (destination_id) REFERENCES destination(destination_id) ON DELETE SET NULL
 );
 
 
 
 CREATE TABLE poi (
     poi_id INT PRIMARY KEY AUTO_INCREMENT,
-    destination_id INT,
-    poi_name VARCHAR(100),
+    destination_id INT NOT NULL,
+    poi_name VARCHAR(100) NOT NULL,
     latitude DECIMAL(9,6),
     longitude DECIMAL(9,6),
-    FOREIGN KEY (destination_id) REFERENCES destination(destination_id)
+    FOREIGN KEY (destination_id) REFERENCES destination(destination_id) ON DELETE CASCADE
 );
 
 
 CREATE TABLE ratings (
-    user_id CHAR(32),
+    user_id CHAR(36),
     poi_id INT,
     rating_food INT,
     rating_safety INT,
@@ -60,6 +60,44 @@ CREATE TABLE ratings (
 CREATE TABLE token_blacklist (
     jti VARCHAR(64) PRIMARY KEY,
     expires_at DATETIME NOT NULL
+);
+
+
+CREATE TABLE travel_groups (
+    group_id CHAR(36) PRIMARY KEY,
+    group_name VARCHAR(100) NOT NULL,
+    description TEXT,
+    destination_id INT,
+    destination_name VARCHAR(100) NOT NULL,
+    travel_month INT CHECK (travel_month BETWEEN 1 AND 12),
+    max_members INT DEFAULT 4 CHECK (max_members BETWEEN 2 AND 10),
+    created_by CHAR(36) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (destination_id) REFERENCES destination(destination_id) ON DELETE SET NULL
+);
+
+
+CREATE TABLE group_join_requests (
+    request_id CHAR(36) PRIMARY KEY,
+    group_id CHAR(36) NOT NULL,
+    user_id CHAR(36) NOT NULL,
+    status ENUM('pending','approved','rejected') DEFAULT 'pending',
+    requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(group_id, user_id),
+    FOREIGN KEY (group_id) REFERENCES travel_groups(group_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+
+CREATE TABLE group_members (
+    group_id CHAR(36),
+    user_id CHAR(36),
+    role ENUM('admin','member') DEFAULT 'member',
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (group_id, user_id),
+    FOREIGN KEY (group_id) REFERENCES travel_groups(group_id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
 
