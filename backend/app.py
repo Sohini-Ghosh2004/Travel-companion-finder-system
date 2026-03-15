@@ -4,8 +4,6 @@
 
 [user profile]:
 - follow ?
-- settings
-- chat
 - gmap
 
 
@@ -17,7 +15,7 @@
 - /api/login
 - /api/logout
 
-[+] group
+[+] group:
 - /api/groups
 - /api/create-group
 - /api/join-group
@@ -27,6 +25,14 @@
 - /api/group/reject
 - /api/group/leave
 - /api/group/requests
+
+[+] chat:
+- /api/chat/send
+- /api/chat/messages
+- /api/chat/unread
+- /api/chat/read
+- /api/group/chat/send
+- /api/group/chat
 
 [+] model:
 - /api/recommend
@@ -131,7 +137,7 @@ def token_required(f):
             return jsonify({"error": "Invalid token"}), 401
         except Exception as e:
             return jsonify({"error": str(e)}), 500
-
+            
         return f(*args, **kwargs)
 
     return decorated
@@ -228,8 +234,7 @@ def create_account():
         return jsonify({"error": str(e)}), 500
 
 
-
-@app.route("/api/update-account", methods = [ "PUT" ])
+@app.route("/api/update-account", methods=[ "PUT" ])
 @token_required
 def update_account():
     try:
@@ -239,9 +244,18 @@ def update_account():
             return jsonify({"error": "Invalid JSON body"}), 400
 
         user_id = request.user_id
+        destination_id = data.get("destination_id")
 
         conn = get_db_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(dictionary=True)
+
+        # check destination exists
+        cursor.execute("SELECT 1 FROM destination WHERE destination_id=%s",(destination_id,))
+
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Invalid destination_id"}), 400
 
         query = """
         UPDATE users
@@ -259,7 +273,7 @@ def update_account():
             data["culture"],
             data["adventure"],
             data["travel_month"],
-            data["destination_id"],
+            destination_id,
             user_id
         )
 
@@ -296,6 +310,13 @@ def delete_account():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# display name, age, curr location, bio, travel history
+@app.route("/api/profile", methods = [ "GET" ])
+@limiter.limit("30 per hour")
+def profile():
+    pass
 
 
 
@@ -365,15 +386,9 @@ def logout():
 
 
 ''' to do '''
-# display name, age, curr location, bio, travel history
-@app.route("/api/profile", methods = [ "GET" ])
-def profile():
-    pass
-
 @app.route("/api/reset-passwd", methods = [ "POST" ])
 def reset_passwd():
     pass
-
 
 
 
@@ -838,6 +853,241 @@ def group_requests():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+
+''' ============== chat ================= '''
+
+# private chat
+@app.route("/api/chat/send", methods=["POST"])
+@limiter.limit("5 per minute")
+@token_required
+def send_private_message():
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
+
+        sender_id = request.user_id
+        receiver_id = data.get("receiver_id")
+        message = data.get("message")
+
+        if not receiver_id or not message:
+            return jsonify({"error": "receiver_id and message required"}), 400
+
+        message = message.strip()
+
+        if not message:
+            return jsonify({"error": "Message cannot be empty"}), 400
+
+        if len(message) > 2000:
+            return jsonify({"error": "Message too long"}), 400
+
+        if receiver_id == sender_id:
+            return jsonify({"error": "Cannot message yourself"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # verify receiver exists
+        cursor.execute("SELECT 1 FROM users WHERE user_id=%s", (receiver_id,))
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "User unavailable"}), 404
+
+        message_id = str(uuid.uuid4())
+
+        cursor.execute("""INSERT INTO private_messages (message_id, sender_id, receiver_id, message) VALUES (%s,%s,%s,%s)""", (message_id, sender_id, receiver_id, message))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"message": "Message sent"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+@app.route("/api/chat/messages", methods=["GET"])
+@token_required
+def get_private_messages():
+    try:
+        user_id = request.user_id
+        other_user = request.args.get("user_id")
+
+        if not other_user:
+            return jsonify({"error": "user_id required"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("""SELECT sender_id, receiver_id, message, sent_at FROM private_messages WHERE (sender_id=%s AND receiver_id=%s) OR (sender_id=%s AND receiver_id=%s) ORDER BY sent_at ASC LIMIT 100""", (user_id, other_user, other_user, user_id))
+
+        messages = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({"messages": messages}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+@app.route("/api/chat/unread", methods=["GET"])
+@token_required
+def unread_messages():
+    try:
+        user_id = request.user_id
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute("""SELECT pm.sender_id AS user_id, u.username, COUNT(*) AS unread
+        FROM private_messages pm JOIN users u ON pm.sender_id = u.user_id
+        WHERE pm.receiver_id = %s
+        AND pm.is_read = FALSE GROUP BY pm.sender_id """, (user_id,))
+
+        rows = cursor.fetchall()
+        total_unread = sum(row["unread"] for row in rows)
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "total_unread": total_unread,
+            "conversations": rows
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+@app.route("/api/chat/read", methods=["POST"])
+@token_required
+def mark_chat_read():
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
+
+        receiver_id = request.user_id
+        sender_id = data.get("user_id")
+
+        if not sender_id:
+            return jsonify({"error": "user_id required"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""UPDATE private_messages SET is_read = TRUE
+        WHERE receiver_id = %s AND sender_id = %s AND is_read = FALSE""", (receiver_id, sender_id))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"message": "Messages marked as read"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+# group chat
+@app.route("/api/group/chat/send", methods=[ "POST" ])
+@limiter.limit("5 per minute")
+@token_required
+def send_group_message():
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
+
+        user_id = request.user_id
+        group_id = data.get("group_id")
+        message = data.get("message")
+
+        if not group_id or not message:
+            return jsonify({"error": "group_id and message required"}), 400
+
+        message = message.strip()
+
+        if not message:
+            return jsonify({"error": "Message cannot be empty"}), 400
+
+        if len(message) > 2000:
+            return jsonify({"error": "Message too long"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary = True)
+
+        # verify membership
+        cursor.execute("""SELECT 1 FROM group_members WHERE group_id=%s AND user_id=%s""", (group_id, user_id))
+
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Not a group member"}), 403
+
+        message_id = str(uuid.uuid4())
+
+        cursor.execute("""INSERT INTO group_messages (message_id, group_id, sender_id, message) VALUES (%s,%s,%s,%s) """, (message_id, group_id, user_id, message))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({"message": "Message sent"}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+@app.route("/api/group/chat", methods=["GET"])
+@token_required
+def get_group_messages():
+    try:
+        user_id = request.user_id
+        group_id = request.args.get("group_id")
+
+        if not group_id:
+            return jsonify({"error": "group_id required"}), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # verify membership
+        cursor.execute("""
+        SELECT 1 FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
+
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Not a group member"}), 403
+
+        cursor.execute("""SELECT gm.sender_id, u.username, gm.message, gm.sent_at FROM group_messages gm JOIN users u ON gm.sender_id = u.user_id WHERE gm.group_id=%s ORDER BY gm.sent_at ASC LIMIT 100""", (group_id,))
+
+        messages = cursor.fetchall()
+
+        cursor.close()
+        conn.close()
+
+        return jsonify({"messages": messages}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 
 
 

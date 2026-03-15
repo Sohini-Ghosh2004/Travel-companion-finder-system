@@ -101,6 +101,35 @@ CREATE TABLE group_members (
 );
 
 
+CREATE TABLE private_messages (
+    message_id CHAR(36) PRIMARY KEY,
+    sender_id CHAR(36) NOT NULL,
+    receiver_id CHAR(36) NOT NULL,
+    message VARCHAR(2000) NOT NULL,
+    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_read BOOLEAN DEFAULT FALSE,
+    FOREIGN KEY (sender_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    FOREIGN KEY (receiver_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_private_pair
+ON private_messages(sender_id, receiver_id, sent_at);
+
+
+CREATE TABLE group_messages (
+    message_id CHAR(36) PRIMARY KEY,
+    group_id CHAR(36) NOT NULL,
+    sender_id CHAR(36) NOT NULL,
+    message VARCHAR(2000) NOT NULL,
+    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (group_id) REFERENCES travel_groups(group_id) ON DELETE CASCADE,
+    FOREIGN KEY (sender_id) REFERENCES users(user_id)
+);
+
+CREATE INDEX idx_group_chat
+ON group_messages(group_id, sent_at);
+
+
 -- dummy data :)
 
 INSERT INTO users 
