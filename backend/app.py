@@ -155,6 +155,10 @@ def token_required(f):
 def create_account():
     try:
         data = request.get_json()
+        month=data.get("travel_month")
+        if month is not None:
+            if not isinstance(month, int) or month < 1 or month > 12:
+                return jsonify({"error": "Invalid travel month"}), 400
 
         if not data:
             return jsonify({"error": "Invalid JSON body"}), 400
@@ -429,6 +433,13 @@ def create_group():
 
         conn = get_db_connection()
         cursor = conn.cursor()
+
+        # check for duplicate group name
+        cursor.execute("""
+        SELECT group_id FROM travel_groups WHERE group_name = %s""", (data["group_name"],))
+        existing = cursor.fetchone()
+        if existing:
+             return jsonify({"error": "Group name already exists"}), 400
 
         cursor.execute("""
         INSERT INTO travel_groups (group_id, group_name, destination_name, travel_month, description, max_members, created_by) VALUES (%s,%s,%s,%s,%s,%s,%s)""", (
@@ -1105,7 +1116,14 @@ def recommend():
             return jsonify({"error": "No JSON body provided"}), 400
 
         user_id = request.user_id   # from jwt
-        top_n = int(data.get("top_n", 5))
+        top_n = data.get("top_n", 5)
+        # type check
+        if not isinstance(top_n, int):
+            return jsonify({"error": "top_n must be an integer"}), 400
+
+        # range check
+        if top_n < 1 or top_n > 20:
+            return jsonify({"error": "top_n must be between 1 and 20"}), 400
 
         # call model
         results = recommender.recommend(user_id = user_id, top_n = int(top_n)) or []
