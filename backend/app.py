@@ -227,11 +227,8 @@ def create_account():
         cursor.close()
         conn.close()
 
-        token = generate_token(user_id)
-
         return jsonify({
-            "message": "Account created",
-            "token": token
+            "message": "Account created successfully. Please login.",
         }), 201
 
     except Exception as e:
@@ -243,40 +240,62 @@ def create_account():
 def update_account():
     try:
         data = request.get_json()
+        age = data.get("age")
+        budget = data.get("budget")
+        beach = data.get("beach")
+        trekking = data.get("trekking")
+        culture = data.get("culture")
+        adventure = data.get("adventure")
+        travel_month = data.get("travel_month")
+        destination_id = data.get("destination_id")
 
         if not data:
             return jsonify({"error": "Invalid JSON body"}), 400
 
         user_id = request.user_id
-        destination_id = data.get("destination_id")
 
         conn = get_db_connection()
         cursor = conn.cursor(dictionary=True)
 
         # check destination exists
-        cursor.execute("SELECT 1 FROM destination WHERE destination_id=%s",(destination_id,))
+        if destination_id is not None:
+            cursor.execute(
+                "SELECT 1 FROM destination WHERE destination_id=%s",
+                (destination_id,)
+            )
+            if not cursor.fetchone():
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Invalid destination_id"}), 400
 
-        if not cursor.fetchone():
-            cursor.close()
-            conn.close()
-            return jsonify({"error": "Invalid destination_id"}), 400
+
+        # validate month
+        if travel_month is not None:
+            if not isinstance(travel_month, int) or travel_month < 1 or travel_month > 12:
+                return jsonify({"error": "Invalid travel month"}), 400
+        
 
         query = """
-        UPDATE users
-        SET age=%s, budget=%s, beach=%s, trekking=%s,
-            culture=%s, adventure=%s,
-            travel_month=%s, destination_id=%s
-        WHERE user_id=%s
+        UPDATE users SET 
+            age = COALESCE(%s, age),
+            budget = COALESCE(%s, budget),
+            beach = COALESCE(%s, beach),
+            trekking = COALESCE(%s, trekking),
+            culture = COALESCE(%s, culture),
+            adventure = COALESCE(%s, adventure),
+            travel_month = COALESCE(%s, travel_month),
+            destination_id = COALESCE(%s, destination_id)
+        WHERE user_id = %s
         """
 
         values = (
-            data["age"],
-            data["budget"],
-            data["beach"],
-            data["trekking"],
-            data["culture"],
-            data["adventure"],
-            data["travel_month"],
+            age,
+            budget,
+            beach,
+            trekking,
+            culture,
+            adventure,
+            travel_month,
             destination_id,
             user_id
         )
