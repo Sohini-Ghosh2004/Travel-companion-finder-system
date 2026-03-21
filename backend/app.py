@@ -68,8 +68,21 @@ recommender = TravelRecommender()
 ''' helping functions '''
 
 # db conn
-def get_db_connection():
-    return mysql.connector.connect(host = "localhost", user = "user", password = "1234!", database = "travel")   # hardcode is shit TT (replace it by getenv())
+def get_db_connection(retries = 5):
+    host = getenv("DB_HOST")
+    user = getenv("DB_USER")
+    password = getenv("DB_PASSWD")
+    database = getenv("DB")
+
+    # retry logic
+    for attempt in range(1, retries + 1):
+        try:
+            conn = mysql.connector.connect(host = host, user = user, password = password, database = database)
+            return conn
+        except Exception as e:
+            sleep(5)
+
+    raise Exception("Cannot connect to Database after several retries")
 
 
 def generate_token(user_id):
@@ -88,8 +101,9 @@ def generate_token(user_id):
 
 # rate limit
 limiter = Limiter(
+    app = app,                                      # forgot to init lol :(
     key_func = get_remote_address,
-    default_limits = ["200 per day", "50 per hour"]
+    default_limits = ["200 per day", "30 per hour"]
 )
 
 

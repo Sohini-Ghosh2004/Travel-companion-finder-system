@@ -25,6 +25,7 @@ results = recommender.recommend(user_id = 69, top_n = 10)
 import pandas as pd
 import numpy as np
 import mysql.connector
+from os import getenv
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.cluster import KMeans
@@ -50,7 +51,7 @@ class TravelRecommender:
 
     
     def _get_connection(self):
-        return mysql.connector.connect(host = "localhost", user = "user", password = "1234!", database = "travel")
+        return mysql.connector.connect(host = getenv("DB_HOST"), user = getenv("DB_USER"), password = getenv("DB_PASSWD"), database = getenv("DB"))
 
 
     

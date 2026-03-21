@@ -1,3 +1,10 @@
+-- hardcoding is shit !!!
+ALTER USER 'user'@'%' IDENTIFIED BY '1234!';
+
+GRANT ALL PRIVILEGES ON travel.* TO 'user'@'%';
+
+FLUSH PRIVILEGES;
+
 CREATE DATABASE IF NOT EXISTS travel;
 
 USE travel;
