@@ -50,8 +50,21 @@ class TravelRecommender:
 
 
     
-    def _get_connection(self):
-        return mysql.connector.connect(host = getenv("DB_HOST"), user = getenv("DB_USER"), password = getenv("DB_PASSWD"), database = getenv("DB"))
+    def _get_connection(self, retries = 5):
+        host = getenv("DB_HOST")
+        user = getenv("DB_USER")
+        password = getenv("DB_PASSWD")
+        database = getenv("DB")
+
+        # retry logic
+        for attempt in range(1, retries + 1):
+            try:
+                conn = mysql.connector.connect(host = host, user = user, password = password, database = database)
+                return conn
+            except Exception as e:
+                sleep(5)
+
+        raise Exception("Cannot connect to Database after several retries")
 
 
     
@@ -62,7 +75,7 @@ class TravelRecommender:
         # self.users_df = pd.read_excel(self.file_path, sheet_name="users")
         # self.ratings_df = pd.read_excel(self.file_path, sheet_name="poi_ratings")
 
-        self.users_df = pd.read_sql(""" SELECT u.*, d.latitude, d.longitude FROM users u LEFT JOIN destination d ON u.destination_id = d.destination_id """, conn)
+        self.users_df = pd.read_sql(""" SELECT * FROM users """, conn)      # updated
         self.ratings_df = pd.read_sql(""" SELECT * FROM ratings """, conn)
 
         conn.close()
@@ -213,6 +226,7 @@ class TravelRecommender:
 
             scores.append({
                 "user_id": str(self.users_df.loc[idx, "user_id"]),          # change
+                "username": self.users_df.loc[idx, "username"],             # username
                 "score": float(score)
             })
 

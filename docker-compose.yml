@@ -21,7 +21,8 @@ services:
       - app
 
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p1234! || exit 1"]
+      # test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p1234! || exit 1"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p || exit 1"] 
       interval: 5s
       timeout: 5s
       retries: 10
@@ -36,7 +37,7 @@ services:
     env_file:
       - ./backend/.env
     ports:
-      - "8080:8080"
+      - "80:8080"
 
     depends_on:
       mysql_db:

@@ -4,7 +4,6 @@
 
 [user profile]:
 - follow ?
-- gmap
 
 
 [api]:
@@ -12,6 +11,9 @@
 - /api/create-account
 - /api/update-account
 - /api/delete-account
+- /api/profile
+
+[+] auth
 - /api/login
 - /api/logout
 
@@ -48,11 +50,13 @@ from time import sleep
 from functools import wraps
 from flask_cors import CORS
 from dotenv import load_dotenv
+from geopy.geocoders import Nominatim
 from flask import Flask, request, jsonify
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from datetime import datetime, timedelta
 from recommender import TravelRecommender       # recommendation model
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 from werkzeug.security import generate_password_hash, check_password_hash
 
 
@@ -102,7 +106,7 @@ def generate_token(user_id):
 
 # rate limit
 limiter = Limiter(
-    app = app,                                      # forgot to init lol :(
+    app = app,                                  # forgot to init lol :(
     key_func = get_remote_address,
     default_limits = ["200 per day", "30 per hour"]
 )
@@ -138,6 +142,11 @@ def token_required(f):
             cursor.execute("SELECT 1 FROM token_blacklist WHERE jti=%s LIMIT 1", (jti,))
             blacklisted = cursor.fetchone()
 
+            # validates existing user
+            cursor.execute("SELECT 1 FROM users WHERE user_id=%s", (user_id,))
+            if not cursor.fetchone():
+                return jsonify({"error": "User no longer exists"}), 401
+
             cursor.close()
             conn.close()
 
@@ -152,11 +161,13 @@ def token_required(f):
             return jsonify({"error": "Invalid token"}), 401
         except Exception as e:
             return jsonify({"error": str(e)}), 500
-            
+
         return f(*args, **kwargs)
 
     return decorated
 
+# implememt random UA per call
+geolocator = Nominatim(user_agent = "Mozilla/5.0 (X11; U; Linux x86_64; en-US; rv:1.8.1.9) Gecko/20071103 BonEcho/2.0.0.9")
 
 
 
@@ -170,25 +181,47 @@ def token_required(f):
 def create_account():
     try:
         data = request.get_json()
-        month=data.get("travel_month")
+
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
+
+        month = data.get("travel_month")
         if month is not None:
             if not isinstance(month, int) or month < 1 or month > 12:
                 return jsonify({"error": "Invalid travel month"}), 400
 
-        if not data:
-            return jsonify({"error": "Invalid JSON body"}), 400
+        age = data.get("age")
+        if age is not None:
+            if not isinstance(age, int) or age <= 0 or age > 100:
+                return jsonify({"error": "Invalid age"}), 400
+
 
         required_fields = [
             "username", "password",
             "age", "budget",
             "beach", "trekking", "culture", "adventure",
-            "travel_month", "destination_id"
+            "travel_month", "destination"
         ]
 
         missing = [f for f in required_fields if f not in data]
         if missing:
-            return jsonify({"error": "Invalid request"}), 400
+            return jsonify({"error": "Missing fields"}), 400
 
+        # geocode the destination
+        destination = data["destination"]
+
+        try:
+            sleep(1)
+            location = geolocator.geocode(destination)
+
+            if location is None:
+                return jsonify({"error": "Invalid destination"}), 400
+
+            latitude = location.latitude
+            longitude = location.longitude
+
+        except (GeocoderTimedOut, GeocoderServiceError):
+            return jsonify({"error": "Geocoding service unavailable"}), 503
 
         conn = get_db_connection()
         cursor = conn.cursor(dictionary = True)
@@ -205,8 +238,7 @@ def create_account():
         password_hash = generate_password_hash(data["password"])
 
         query = """
-        INSERT INTO users
-        (
+        INSERT INTO users (
             user_id,
             username,
             password_hash,
@@ -217,9 +249,11 @@ def create_account():
             culture,
             adventure,
             travel_month,
-            destination_id
+            destination,
+            latitude,
+            longitude
         )
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """
 
         values = (
@@ -233,7 +267,9 @@ def create_account():
             int(data["culture"]),
             int(data["adventure"]),
             int(data["travel_month"]),
-            int(data["destination_id"])
+            destination,
+            latitude,
+            longitude
         )
 
         cursor.execute(query, values)
@@ -255,6 +291,11 @@ def create_account():
 def update_account():
     try:
         data = request.get_json()
+
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
+
+
         age = data.get("age")
         budget = data.get("budget")
         beach = data.get("beach")
@@ -262,33 +303,40 @@ def update_account():
         culture = data.get("culture")
         adventure = data.get("adventure")
         travel_month = data.get("travel_month")
-        destination_id = data.get("destination_id")
-
-        if not data:
-            return jsonify({"error": "Invalid JSON body"}), 400
+        destination = data.get("destination")
 
         user_id = request.user_id
-
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
-
-        # check destination exists
-        if destination_id is not None:
-            cursor.execute(
-                "SELECT 1 FROM destination WHERE destination_id=%s",
-                (destination_id,)
-            )
-            if not cursor.fetchone():
-                cursor.close()
-                conn.close()
-                return jsonify({"error": "Invalid destination_id"}), 400
-
 
         # validate month
         if travel_month is not None:
             if not isinstance(travel_month, int) or travel_month < 1 or travel_month > 12:
                 return jsonify({"error": "Invalid travel month"}), 400
         
+        if age is not None:
+            if not isinstance(age, int) or age <= 0 or age > 100:
+                return jsonify({"error": "Invalid age"}), 400
+
+        
+        latitude = None
+        longitude = None
+
+        # handle destination updation
+        if destination:
+            try:
+                sleep(1)
+                location = geolocator.geocode(destination)
+
+                if location is None:
+                    return jsonify({"error": "Invalid destination"}), 400
+
+                latitude = location.latitude
+                longitude = location.longitude
+
+            except (GeocoderTimedOut, GeocoderServiceError):
+                return jsonify({"error": "Geocoding service unavailable"}), 503
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary = True)
 
         query = """
         UPDATE users SET 
@@ -299,7 +347,9 @@ def update_account():
             culture = COALESCE(%s, culture),
             adventure = COALESCE(%s, adventure),
             travel_month = COALESCE(%s, travel_month),
-            destination_id = COALESCE(%s, destination_id)
+            destination = COALESCE(%s, destination),
+            latitude = COALESCE(%s, latitude),
+            longitude = COALESCE(%s, longitude)
         WHERE user_id = %s
         """
 
@@ -311,7 +361,9 @@ def update_account():
             culture,
             adventure,
             travel_month,
-            destination_id,
+            destination,
+            latitude,
+            longitude,
             user_id
         )
 
@@ -337,7 +389,7 @@ def delete_account():
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        cursor.execute("DELETE FROM ratings WHERE user_id=%s", (user_id,))
+        #cursor.execute("DELETE FROM ratings WHERE user_id=%s", (user_id,))
         cursor.execute("DELETE FROM users WHERE user_id=%s", (user_id,))
         conn.commit()
 
@@ -350,11 +402,32 @@ def delete_account():
         return jsonify({"error": str(e)}), 500
 
 
-# display name, age, curr location, bio, travel history
 @app.route("/api/profile", methods = [ "GET" ])
 @limiter.limit("30 per hour")
+@token_required
 def profile():
-    pass
+    try:
+        user_id = request.user_id
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary = True)
+
+        query = """SELECT user_id,username,pfp,age,budget,beach,trekking,culture,adventure,travel_month,destination,
+        created_at FROM users WHERE user_id = %s"""
+
+        cursor.execute(query, (user_id,))
+        user = cursor.fetchone()
+
+        cursor.close()
+        conn.close()
+
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+
+        return jsonify(user), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 
@@ -394,7 +467,7 @@ def login():
 
 
 
-@app.route("/api/logout", methods = [ "POST" ])
+@app.route("/api/logout", methods = [ "GET" ])
 @token_required
 def logout():
     try:
@@ -416,7 +489,7 @@ def logout():
         cursor.close()
         conn.close()
 
-        return jsonify({"message": "Logout successful. Token revoked."}), 200
+        return jsonify({"message": "Logout successful"}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -447,41 +520,60 @@ def create_group():
         max_members = data.get("max_members", 4)
         group_id = str(uuid.uuid4())
         month = data.get("travel_month")
+        group_name = data.get("group_name", "").strip()
+        destination = data.get("destination", "").strip()
+        description = data.get("description")
 
+        if not group_name or not destination:
+            return jsonify({"error": "group_name and destination required"}), 400
+        
+        if len(group_name) > 100 or (description and len(description) > 500) or len(destination) > 100:
+            return jsonify({"error": "string too long"}), 400
 
         if month is not None:
             if not isinstance(month, int) or month < 1 or month > 12:
                 return jsonify({"error": "Invalid travel month"}), 400
-
+        
         if not isinstance(max_members, int):
             return jsonify({"error": "max_members must be integer"}), 400
-
+        
         if max_members is not None and (max_members < 2 or max_members > 10):
             return jsonify({"error": "Group size must be between 2 and 10"}), 400
-
-        if ((data.get("group_name") and len(data["group_name"]) > 100) or (data.get("description") and len(data["description"]) > 500) or (data.get("destination_name") and len(data["destination_name"]) > 100)):
-            return jsonify({"error":"string too long"}), 400
         
-        if not data.get("group_name") or not data.get("destination_name"):
-            return jsonify({"error": "group_name and destination_name required"}), 400
+        # geocode
+        try:
+            sleep(1)
+            location = geolocator.geocode(destination)
+
+            if location is None:
+                return jsonify({"error": "Invalid destination"}), 400
+
+            latitude = location.latitude
+            longitude = location.longitude
+
+        except (GeocoderTimedOut, GeocoderServiceError):
+            return jsonify({"error": "Geocoding service unavailable"}), 503
+
 
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # check for duplicate group name
-        cursor.execute("""
-        SELECT group_id FROM travel_groups WHERE group_name = %s""", (data["group_name"],))
-        existing = cursor.fetchone()
-        if existing:
-             return jsonify({"error": "Group name already exists"}), 400
+        cursor.execute("SELECT 1 FROM travel_groups WHERE group_name = %s LIMIT 1",(group_name,))
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Group name already exists"}), 409
+
 
         cursor.execute("""
-        INSERT INTO travel_groups (group_id, group_name, destination_name, travel_month, description, max_members, created_by) VALUES (%s,%s,%s,%s,%s,%s,%s)""", (
+            INSERT INTO travel_groups (group_id,group_name,description,destination,latitude,longitude,travel_month,max_members,created_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)""", (
             group_id,
-            data["group_name"],
-            data["destination_name"],
+            group_name,
+            description,
+            destination,
+            latitude,
+            longitude,
             month,
-            data.get("description"),
             max_members,
             user_id
         ))
@@ -509,7 +601,7 @@ def join_group():
             return jsonify({"error": "Invalid JSON body"}), 400
 
         user_id = request.user_id
-        group_id = data["group_id"]
+        group_id = data.get("group_id", "").strip()
 
         if not group_id:
             return jsonify({"error": "group_id required"}), 400
@@ -528,7 +620,7 @@ def join_group():
             return jsonify({"error": "Group not found"}), 404
 
         # check if already member
-        cursor.execute("SELECT 1 FROM group_members WHERE group_id=%s AND user_id=%s",(group_id, user_id))
+        cursor.execute("SELECT 1 FROM group_members WHERE group_id=%s AND user_id=%s LIMIT 1",(group_id, user_id))
 
         if cursor.fetchone():
             cursor.close()
@@ -536,12 +628,24 @@ def join_group():
             return jsonify({"error": "Already a member"}), 400
 
         # check existing join request
-        cursor.execute("SELECT status FROM group_join_requests WHERE group_id=%s AND user_id=%s",(group_id, user_id))
+        cursor.execute("SELECT status FROM group_join_requests WHERE group_id=%s AND user_id=%s LIMIT 1",(group_id, user_id))
 
-        if cursor.fetchone():
-            cursor.close()
-            conn.close()
-            return jsonify({"error": "Join request already exists"}), 400
+        existing = cursor.fetchone()
+
+        if existing:
+            if existing["status"] == "pending":
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Join request already pending"}), 400
+
+            elif existing["status"] == "approved":
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Already approved"}), 400
+
+            elif existing["status"] == "rejected":
+                cursor.execute("DELETE FROM group_join_requests WHERE group_id=%s AND user_id=%s",(group_id, user_id))
+
 
         # count current members
         cursor.execute("SELECT COUNT(*) AS members FROM group_members WHERE group_id=%s",(group_id,))
@@ -578,18 +682,29 @@ def update_group():
             return jsonify({"error": "Invalid JSON body"}), 400
 
         user_id = request.user_id
-        group_id = data["group_id"]
+        group_id = data.get("group_id", "").strip()
         month = data.get("travel_month")
         group_name = data.get("group_name")
         description = data.get("description")
-        destination = data.get("destination_name")
+        destination = data.get("destination")
         max_members = data.get("max_members")
 
         if not group_id:
             return jsonify({"error": "group_id required"}), 400
 
-        if ((data.get("group_name") and len(data["group_name"]) > 100) or (data.get("description") and len(data["description"]) > 500) or (data.get("destination_name") and len(data["destination_name"]) > 100)):
-            return jsonify({"error":"string too long"}), 400
+        if group_name is not None:
+            group_name = group_name.strip()
+            if not group_name or len(group_name) > 100:
+                return jsonify({"error": "Invalid group_name"}), 400
+
+        if description is not None:
+            if len(description) > 500:
+                return jsonify({"error": "description too long"}), 400
+
+        if destination is not None:
+            destination = destination.strip()
+            if not destination or len(destination) > 100:
+                return jsonify({"error": "Invalid destination"}), 400
 
         if month is not None:
             if not isinstance(month, int) or month < 1 or month > 12:
@@ -605,17 +720,49 @@ def update_group():
         cursor = conn.cursor(dictionary = True)
 
 
-        cursor.execute("""SELECT role FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
+        cursor.execute("""SELECT role FROM group_members WHERE group_id=%s AND user_id=%s LIMIT 1""", (group_id, user_id))
         role = cursor.fetchone()
 
         if not role or role["role"] != "admin":
             return jsonify({"error": "Only admin can update group"}), 403
+        
+        if max_members is not None:
+            cursor.execute("SELECT COUNT(*) AS members FROM group_members WHERE group_id=%s",(group_id,))
+            members = cursor.fetchone()["members"]
+
+            if max_members < members:
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "max_members cannot be less than current members"}), 400
+        
+        # geocode
+        latitude = None
+        longitude = None
+
+        if destination is not None:
+            try:
+                sleep(1)
+                location = geolocator.geocode(destination)
+
+                if location is None:
+                    cursor.close()
+                    conn.close()
+                    return jsonify({"error": "Invalid destination"}), 400
+
+                latitude = location.latitude
+                longitude = location.longitude
+
+            except (GeocoderTimedOut, GeocoderServiceError):
+                cursor.close()
+                conn.close()
+                return jsonify({"error": "Geocoding service unavailable"}), 503
 
 
         # return the first non-null value in a list
         cursor.execute("""
-            UPDATE travel_groups SET group_name = COALESCE(%s, group_name), description = COALESCE(%s, description), destination_name = COALESCE(%s, destination_name),travel_month = COALESCE(%s, travel_month),
-            max_members = COALESCE(%s, max_members) WHERE group_id = %s """, (group_name, description, destination, month, max_members, group_id))
+            UPDATE travel_groups SET group_name = COALESCE(%s, group_name),description = COALESCE(%s, description),destination = COALESCE(%s, destination),latitude = COALESCE(%s, latitude),longitude = COALESCE(%s, longitude),travel_month = COALESCE(%s, travel_month),max_members = COALESCE(%s, max_members) WHERE group_id = %s
+        """, (group_name,description,destination,latitude,longitude,month,max_members,group_id))
+
 
         conn.commit()
         cursor.close()
@@ -639,7 +786,7 @@ def delete_group():
 
 
         user_id = request.user_id
-        group_id = data["group_id"]
+        group_id = data.get("group_id")
 
         if not group_id:
             return jsonify({"error": "group_id required"}), 400
@@ -647,11 +794,19 @@ def delete_group():
         conn = get_db_connection()
         cursor = conn.cursor(dictionary = True)
 
+        cursor.execute("SELECT 1 FROM travel_groups WHERE group_id=%s", (group_id,))
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Group not found"}), 404
+
         cursor.execute("""SELECT role FROM group_members WHERE group_id=%s AND user_id=%s """,(group_id,user_id))
         role = cursor.fetchone()
 
         if not role or role["role"] != "admin":
             return jsonify({"error":"Only admin can delete group"}), 403
+
+        # conn.start_transaction()
 
         cursor.execute("DELETE FROM travel_groups WHERE group_id=%s",(group_id,))
 
@@ -674,27 +829,34 @@ def get_groups():
         user_id = request.user_id
 
         conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(dictionary = True)
 
         cursor.execute("""
-        SELECT g.group_id, g.group_name, g.destination_name, g.travel_month, g.description, g.max_members, u.username AS admin,COUNT(m.user_id) AS current_members,
-        MAX(CASE WHEN m.user_id = %s THEN 1 ELSE 0 END) AS joined,
-        MAX(CASE WHEN r.user_id = %s AND r.status='pending' THEN 1 ELSE 0 END) AS request_pending
-        FROM travel_groups g
+        SELECT g.group_id,g.group_name,g.destination,g.travel_month,g.description,g.max_members,u.username AS admin, COUNT(DISTINCT m.user_id) AS current_members,
+            IFNULL(MAX(CASE WHEN m.user_id = %s THEN 1 ELSE 0 END), 0) AS joined,
+            IFNULL(MAX(CASE WHEN r.user_id = %s AND r.status='pending' THEN 1 ELSE 0 END), 0) AS request_pending FROM travel_groups g
+
         LEFT JOIN group_members m 
             ON g.group_id = m.group_id
+
         LEFT JOIN users u
             ON g.created_by = u.user_id
-        LEFT JOIN group_join_requests r ON g.group_id = r.group_id AND r.user_id=%s
-        GROUP BY g.group_id, g.group_name, g.destination_name, g.travel_month, g.description, g.max_members, u.username 
-        ORDER BY g.created_at DESC""", (user_id, user_id, user_id))
+
+        LEFT JOIN group_join_requests r 
+            ON g.group_id = r.group_id AND r.user_id = %s
+
+        GROUP BY 
+            g.group_id, g.group_name, g.destination, g.travel_month, g.description, g.max_members, u.username
+           
+        ORDER BY g.created_at DESC
+        """, (user_id, user_id, user_id))
 
         groups = cursor.fetchall()
 
         cursor.close()
         conn.close()
 
-        return jsonify({"groups": groups}), 200
+        return jsonify({"groups": groups or []}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -711,10 +873,10 @@ def allow_request():
             return jsonify({"error": "Invalid JSON body"}), 400
 
         admin_id = request.user_id
-        group_id = data["group_id"]
-        user_id = data["user_id"]
+        group_id = data.get("group_id")
+        target_user_id = data.get("user_id")
 
-        if not group_id or not user_id:
+        if not group_id or not target_user_id:
             return jsonify({"error": "group_id and user_id required"}), 400
 
         conn = get_db_connection()
@@ -724,40 +886,53 @@ def allow_request():
         role = cursor.fetchone()
 
         if not role or role["role"] != "admin":
+            cursor.close()
+            conn.close()
             return jsonify({"error": "Only admin allowed"}), 403
 
-
-        # verify request exists
-        cursor.execute("""SELECT status FROM group_join_requests WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
-        req = cursor.fetchone()
-
-        if not req:
-            return jsonify({"error": "Request not found"}), 404
-
-        if req["status"] != "pending":
-            return jsonify({"error": "Request already processed"}), 400
-
-        # check membership
-        cursor.execute("""SELECT 1 FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
-
-        if cursor.fetchone():
-            return jsonify({"error": "User already a member"}), 400
-
         # check group capacity
-        cursor.execute("""SELECT COUNT(*) AS members FROM group_members WHERE group_id=%s """, (group_id,))
-        members = cursor.fetchone()["members"]
-
-        cursor.execute("""SELECT max_members FROM travel_groups WHERE group_id=%s """, (group_id,))
+        cursor.execute("""SELECT g.max_members,COUNT(m.user_id) AS members FROM travel_groups g LEFT JOIN group_members m ON g.group_id = m.group_id WHERE g.group_id = %s GROUP BY g.group_id""", (group_id,))
         group = cursor.fetchone()
 
         if not group:
+            cursor.close()
+            conn.close()
             return jsonify({"error": "Group not found"}), 404
 
-        if members >= group["max_members"]:
+        if group["members"] >= group["max_members"]:
+            cursor.close()
+            conn.close()
             return jsonify({"error": "Group is full"}), 400
 
-        cursor.execute("""INSERT INTO group_members (group_id, user_id, role) VALUES (%s,%s,'member') """, (group_id, user_id))
-        cursor.execute("""UPDATE group_join_requests SET status='approved' WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
+
+        # verify request exists
+        cursor.execute("""SELECT status FROM group_join_requests WHERE group_id=%s AND user_id=%s """, (group_id, target_user_id))
+        req = cursor.fetchone()
+
+        if not req:
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Request not found"}), 404
+
+        if req["status"] != "pending":
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Request already processed"}), 400
+        
+
+        # check membership
+        cursor.execute("""SELECT 1 FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, target_user_id))
+
+        if cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "User already a member"}), 400
+
+        # transaction
+        # conn.start_transaction()
+
+        cursor.execute("""INSERT INTO group_members (group_id, user_id, role) VALUES (%s,%s,'member') """, (group_id, target_user_id))
+        cursor.execute("""UPDATE group_join_requests SET status='approved' WHERE group_id=%s AND user_id=%s """, (group_id, target_user_id))
 
         conn.commit()
         cursor.close()
@@ -766,6 +941,10 @@ def allow_request():
         return jsonify({"message": "User approved"}), 200
 
     except Exception as e:
+        try:
+            conn.rollback()
+        except:
+            pass
         return jsonify({"error": str(e)}), 500
 
 
@@ -781,29 +960,48 @@ def reject_request():
 
         admin_id = request.user_id
 
-        group_id = data["group_id"]
-        user_id = data["user_id"]
+        group_id = data.get("group_id")
+        target_user_id = data.get("user_id")
+
+        if not group_id or not target_user_id:
+            return jsonify({"error": "group_id and user_id required"}), 400
 
         conn = get_db_connection()
         cursor = conn.cursor(dictionary = True)
+
+        # check group
+        cursor.execute("SELECT 1 FROM travel_groups WHERE group_id=%s", (group_id,))
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Group not found"}), 404
+
 
         cursor.execute("""SELECT role FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, admin_id))
         role = cursor.fetchone()
 
         if not role or role["role"] != "admin":
+            cursor.close()
+            conn.close()
             return jsonify({"error": "Only admin allowed"}), 403
         
 
-        cursor.execute("""SELECT status FROM group_join_requests WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
+        cursor.execute("""SELECT status FROM group_join_requests WHERE group_id=%s AND user_id=%s """, (group_id, target_user_id))
         req = cursor.fetchone()
 
         if not req:
+            cursor.close()
+            conn.close()
             return jsonify({"error": "Request not found"}), 404
         
         if req["status"] != "pending":
+            cursor.close()
+            conn.close()
             return jsonify({"error": "Request already processed"}), 400
 
-        cursor.execute("""UPDATE group_join_requests SET status='rejected' WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
+        # conn.start_transaction()
+
+        cursor.execute("""UPDATE group_join_requests SET status='rejected' WHERE group_id=%s AND user_id=%s """, (group_id, target_user_id))
 
         conn.commit()
         cursor.close()
@@ -812,6 +1010,10 @@ def reject_request():
         return jsonify({"message": "Request rejected"}), 200
 
     except Exception as e:
+        try:
+            conn.rollback()
+        except:
+            pass
         return jsonify({"error": str(e)}), 500
 
 
@@ -826,7 +1028,7 @@ def leave():
             return jsonify({"error": "Invalid JSON body"}), 400
 
         user_id = request.user_id
-        group_id = data["group_id"]
+        group_id = data.get("group_id")
 
         if not group_id:
             return jsonify({"error": "group_id required"}), 400
@@ -834,16 +1036,30 @@ def leave():
         conn = get_db_connection()
         cursor = conn.cursor(dictionary = True)
 
+        # check group existence 
+        cursor.execute("SELECT 1 FROM travel_groups WHERE group_id=%s", (group_id,))
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Group not found"}), 404
+
         # check membership
         cursor.execute("""SELECT role FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
         member = cursor.fetchone()
 
         if not member:
+            cursor.close()
+            conn.close()
             return jsonify({"error": "You are not a member of this group"}), 400
 
         # admin cannot leave
         if member["role"] == "admin":
+            cursor.close()
+            conn.close()
             return jsonify({"error": "Admin cannot leave the group"}), 400
+
+        # transaction start
+        # conn.start_transaction()
 
         # remove member
         cursor.execute("""DELETE FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
@@ -858,6 +1074,10 @@ def leave():
         return jsonify({"message": "Left group successfully"}), 200
 
     except Exception as e:
+        try:
+            conn.rollback()
+        except:
+            pass
         return jsonify({"error": str(e)}), 500
 
 
@@ -873,7 +1093,14 @@ def group_requests():
             return jsonify({"error": "group_id required"}), 400
 
         conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(dictionary = True)
+
+        # group check
+        cursor.execute("SELECT 1 FROM travel_groups WHERE group_id=%s",(group_id,))
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "Group not found"}), 404
 
         # verify admin
         cursor.execute("""SELECT role FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, admin_id))
@@ -881,6 +1108,8 @@ def group_requests():
         role = cursor.fetchone()
 
         if not role or role["role"] != "admin":
+            cursor.close()
+            conn.close()
             return jsonify({"error": "Only admin allowed"}), 403
 
 
@@ -894,17 +1123,18 @@ def group_requests():
         cursor.close()
         conn.close()
 
-        return jsonify({"group_id": group_id, "pending_requests": requests}), 200
+        return jsonify({"group_id": group_id, "pending_requests": requests or []}), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 
+
 ''' ============== chat ================= '''
 
 # private chat
-@app.route("/api/chat/send", methods=["POST"])
+@app.route("/api/chat/send", methods=[ "POST" ])
 @limiter.limit("5 per minute")
 @token_required
 def send_private_message():
@@ -916,12 +1146,10 @@ def send_private_message():
 
         sender_id = request.user_id
         receiver_id = data.get("receiver_id")
-        message = data.get("message")
+        message = data.get("message").strip()
 
         if not receiver_id or not message:
             return jsonify({"error": "receiver_id and message required"}), 400
-
-        message = message.strip()
 
         if not message:
             return jsonify({"error": "Message cannot be empty"}), 400
@@ -944,6 +1172,8 @@ def send_private_message():
 
         message_id = str(uuid.uuid4())
 
+        # conn.start_transaction()
+
         cursor.execute("""INSERT INTO private_messages (message_id, sender_id, receiver_id, message) VALUES (%s,%s,%s,%s)""", (message_id, sender_id, receiver_id, message))
 
         conn.commit()
@@ -953,11 +1183,15 @@ def send_private_message():
         return jsonify({"message": "Message sent"}), 200
 
     except Exception as e:
+        try:
+            conn.rollback()
+        except:
+            pass
         return jsonify({"error": str(e)}), 500
 
 
 
-@app.route("/api/chat/messages", methods=["GET"])
+@app.route("/api/chat/messages", methods=[ "GET" ])
 @token_required
 def get_private_messages():
     try:
@@ -968,7 +1202,7 @@ def get_private_messages():
             return jsonify({"error": "user_id required"}), 400
 
         conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(dictionary = True)
 
         cursor.execute("""SELECT sender_id, receiver_id, message, sent_at FROM private_messages WHERE (sender_id=%s AND receiver_id=%s) OR (sender_id=%s AND receiver_id=%s) ORDER BY sent_at ASC LIMIT 100""", (user_id, other_user, other_user, user_id))
 
@@ -984,14 +1218,14 @@ def get_private_messages():
 
 
 
-@app.route("/api/chat/unread", methods=["GET"])
+@app.route("/api/chat/unread", methods=[ "GET" ])
 @token_required
 def unread_messages():
     try:
         user_id = request.user_id
 
         conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(dictionary = True)
 
         cursor.execute("""SELECT pm.sender_id AS user_id, u.username, COUNT(*) AS unread
         FROM private_messages pm JOIN users u ON pm.sender_id = u.user_id
@@ -1006,7 +1240,7 @@ def unread_messages():
 
         return jsonify({
             "total_unread": total_unread,
-            "conversations": rows
+            "conversations": rows or []
         }), 200
 
     except Exception as e:
@@ -1014,7 +1248,7 @@ def unread_messages():
 
 
 
-@app.route("/api/chat/read", methods=["POST"])
+@app.route("/api/chat/read", methods=[ "POST" ])
 @token_required
 def mark_chat_read():
     try:
@@ -1029,11 +1263,13 @@ def mark_chat_read():
         if not sender_id:
             return jsonify({"error": "user_id required"}), 400
 
+
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        cursor.execute("""UPDATE private_messages SET is_read = TRUE
-        WHERE receiver_id = %s AND sender_id = %s AND is_read = FALSE""", (receiver_id, sender_id))
+        conn.start_transaction()
+
+        cursor.execute("""UPDATE private_messages SET is_read = TRUE WHERE receiver_id = %s AND sender_id = %s AND is_read = FALSE""", (receiver_id, sender_id))
 
         conn.commit()
         cursor.close()
@@ -1042,6 +1278,10 @@ def mark_chat_read():
         return jsonify({"message": "Messages marked as read"}), 200
 
     except Exception as e:
+        try:
+            conn.rollback()
+        except:
+            pass
         return jsonify({"error": str(e)}), 500
 
 
@@ -1059,15 +1299,10 @@ def send_group_message():
 
         user_id = request.user_id
         group_id = data.get("group_id")
-        message = data.get("message")
+        message = data.get("message", "").strip()
 
         if not group_id or not message:
             return jsonify({"error": "group_id and message required"}), 400
-
-        message = message.strip()
-
-        if not message:
-            return jsonify({"error": "Message cannot be empty"}), 400
 
         if len(message) > 2000:
             return jsonify({"error": "Message too long"}), 400
@@ -1076,7 +1311,7 @@ def send_group_message():
         cursor = conn.cursor(dictionary = True)
 
         # verify membership
-        cursor.execute("""SELECT 1 FROM group_members WHERE group_id=%s AND user_id=%s""", (group_id, user_id))
+        cursor.execute("""SELECT 1 FROM group_members WHERE group_id=%s AND user_id=%s LIMIT 1""", (group_id, user_id))
 
         if not cursor.fetchone():
             cursor.close()
@@ -1084,6 +1319,8 @@ def send_group_message():
             return jsonify({"error": "Not a group member"}), 403
 
         message_id = str(uuid.uuid4())
+
+        # conn.start_transaction()
 
         cursor.execute("""INSERT INTO group_messages (message_id, group_id, sender_id, message) VALUES (%s,%s,%s,%s) """, (message_id, group_id, user_id, message))
 
@@ -1094,11 +1331,15 @@ def send_group_message():
         return jsonify({"message": "Message sent"}), 200
 
     except Exception as e:
+        try:
+            conn.rollback()
+        except:
+            pass
         return jsonify({"error": str(e)}), 500
 
 
 
-@app.route("/api/group/chat", methods=["GET"])
+@app.route("/api/group/chat", methods=[ "GET" ])
 @token_required
 def get_group_messages():
     try:
@@ -1109,11 +1350,10 @@ def get_group_messages():
             return jsonify({"error": "group_id required"}), 400
 
         conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(dictionary = True)
 
         # verify membership
-        cursor.execute("""
-        SELECT 1 FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
+        cursor.execute("""SELECT 1 FROM group_members WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
 
         if not cursor.fetchone():
             cursor.close()
@@ -1133,9 +1373,6 @@ def get_group_messages():
         return jsonify({"error": str(e)}), 500
 
 
-
-
-
 ''' ========== model ============== '''
 
 # recomend top n users
@@ -1147,7 +1384,7 @@ def recommend():
         data = request.get_json()
 
         if not data:
-            return jsonify({"error": "No JSON body provided"}), 400
+            return jsonify({"error": "Invalid JSON body"}), 400
 
         user_id = request.user_id   # from jwt
         top_n = data.get("top_n", 5)
@@ -1158,6 +1395,20 @@ def recommend():
         # range check
         if top_n < 1 or top_n > 20:
             return jsonify({"error": "top_n must be between 1 and 20"}), 400
+
+
+        # verify valid user
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT 1 FROM users WHERE user_id=%s", (user_id,))
+        if not cursor.fetchone():
+            cursor.close()
+            conn.close()
+            return jsonify({"error": "User not found"}), 404
+        
+        cursor.close()
+        conn.close()
 
         # call model
         results = recommender.recommend(user_id = user_id, top_n = int(top_n)) or []
