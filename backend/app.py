@@ -58,7 +58,21 @@ from datetime import datetime, timedelta
 from recommender import TravelRecommender       # recommendation model
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 from werkzeug.security import generate_password_hash, check_password_hash
+import logging
+import re
 
+
+#logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("app.log"),
+        logging.StreamHandler()
+    ]
+)
+
+logger = logging.getLogger(__name__)
 
 # init
 app = Flask(__name__)
@@ -103,6 +117,24 @@ def generate_token(user_id):
     token = jwt.encode(payload, app.config["JWT_SECRET"], algorithm = app.config["JWT_ALGORITHM"])
     return token
 
+#stong password 
+def validate_password(password):
+    if len(password) < 8:
+        return "Password must be at least 8 characters long"
+
+    if not re.search(r"[A-Z]", password):
+        return "Password must contain at least one uppercase letter"
+
+    if not re.search(r"[a-z]", password):
+        return "Password must contain at least one lowercase letter"
+
+    if not re.search(r"[0-9]", password):
+        return "Password must contain at least one digit"
+
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
+        return "Password must contain at least one special character"
+    
+    return None
 
 # rate limit
 limiter = Limiter(
@@ -151,16 +183,20 @@ def token_required(f):
             conn.close()
 
             if blacklisted:
+                logger.warning(f"Blacklisted token used: user {user_id}")
                 return jsonify({"error": "Token revoked"}), 401
 
             request.user_id = user_id
 
         except jwt.ExpiredSignatureError:
+            logger.warning("Expired token used")
             return jsonify({"error": "Token expired"}), 401
         except jwt.InvalidTokenError:
+            logger.warning("Invalid token used")
             return jsonify({"error": "Invalid token"}), 401
         except Exception as e:
-            return jsonify({"error": str(e)}), 500
+            logger.error(f"Token validation failed: {str(e)}")
+            return jsonify({"error": "Internal server error"}), 500
 
         return f(*args, **kwargs)
 
@@ -183,16 +219,19 @@ def create_account():
         data = request.get_json()
 
         if not data:
+            logger.warning("Invalid JSON body in create_account")
             return jsonify({"error": "Invalid JSON body"}), 400
 
         month = data.get("travel_month")
         if month is not None:
             if not isinstance(month, int) or month < 1 or month > 12:
+                logger.warning("Invalid month in create_account")
                 return jsonify({"error": "Invalid travel month"}), 400
 
         age = data.get("age")
         if age is not None:
             if not isinstance(age, int) or age <= 0 or age > 100:
+                logger.warning("Invalid age in create_account")
                 return jsonify({"error": "Invalid age"}), 400
 
 
@@ -205,6 +244,7 @@ def create_account():
 
         missing = [f for f in required_fields if f not in data]
         if missing:
+            logger.warning(f"Missing fields in create_account: {missing}")
             return jsonify({"error": "Missing fields"}), 400
 
         # geocode the destination
@@ -215,12 +255,14 @@ def create_account():
             location = geolocator.geocode(destination)
 
             if location is None:
+                logger.warning("Invalid destination in create_account")
                 return jsonify({"error": "Invalid destination"}), 400
 
             latitude = location.latitude
             longitude = location.longitude
 
         except (GeocoderTimedOut, GeocoderServiceError):
+            logger.error(f"Geocoding failed for destination '{destination}'")
             return jsonify({"error": "Geocoding service unavailable"}), 503
 
         conn = get_db_connection()
@@ -234,6 +276,10 @@ def create_account():
 
         # generate uuid
         user_id = str(uuid.uuid4())
+
+        password_error = validate_password(data["password"])
+        if password_error:
+            return jsonify({"error": password_error}), 400
 
         password_hash = generate_password_hash(data["password"])
 
@@ -274,7 +320,7 @@ def create_account():
 
         cursor.execute(query, values)
         conn.commit()
-
+        logger.info(f"Account created successfully for: {user_id}")
         cursor.close()
         conn.close()
 
@@ -283,7 +329,9 @@ def create_account():
         }), 201
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        username = data.get("username", "unknown") if data else "unknown"
+        logger.error(f"Create account failed for username={username}: {str(e)}")
+        return jsonify({"error":"Internal server error"}), 500
 
 
 @app.route("/api/update-account", methods=[ "PUT" ])
@@ -293,6 +341,7 @@ def update_account():
         data = request.get_json()
 
         if not data:
+            logger.warning("Invalid JSON body in update_account")
             return jsonify({"error": "Invalid JSON body"}), 400
 
 
@@ -310,10 +359,12 @@ def update_account():
         # validate month
         if travel_month is not None:
             if not isinstance(travel_month, int) or travel_month < 1 or travel_month > 12:
+                logger.warning("Invalid travel month in update_account")
                 return jsonify({"error": "Invalid travel month"}), 400
         
         if age is not None:
             if not isinstance(age, int) or age <= 0 or age > 100:
+                logger.warning("Invalid age in update_account")
                 return jsonify({"error": "Invalid age"}), 400
 
         
@@ -327,12 +378,14 @@ def update_account():
                 location = geolocator.geocode(destination)
 
                 if location is None:
+                    logger.warning("Invalid destination in update_account")
                     return jsonify({"error": "Invalid destination"}), 400
 
                 latitude = location.latitude
                 longitude = location.longitude
 
             except (GeocoderTimedOut, GeocoderServiceError):
+                logger.error(f"Geocoding failed for destination '{destination}'")
                 return jsonify({"error": "Geocoding service unavailable"}), 503
 
         conn = get_db_connection()
@@ -369,14 +422,16 @@ def update_account():
 
         cursor.execute(query, values)
         conn.commit()
-
+        logger.info(f"Account updated for user {user_id}")
         cursor.close()
         conn.close()
 
         return jsonify({"message": "Profile updated"}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        user_id = getattr(request, "user_id", "unknown")
+        logger.error(f"Update account failed for user {user_id}: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 
@@ -392,14 +447,16 @@ def delete_account():
         #cursor.execute("DELETE FROM ratings WHERE user_id=%s", (user_id,))
         cursor.execute("DELETE FROM users WHERE user_id=%s", (user_id,))
         conn.commit()
-
+        logger.info(f"Account deleted for user {user_id}")
         cursor.close()
         conn.close()
 
         return jsonify({"message": "Account deleted"}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        user_id = getattr(request, "user_id", "unknown")
+        logger.error(f"Delete account failed for user {user_id}: {str(e)}")
+        return jsonify({"error":"Internal server error" }), 500
 
 
 @app.route("/api/profile", methods = [ "GET" ])
@@ -423,11 +480,15 @@ def profile():
 
         if not user:
             return jsonify({"error": "User not found"}), 404
+        
+        logger.info(f"Profile fetched for user {user_id}")
 
         return jsonify(user), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        user_id = getattr(request, "user_id", "unknown")
+        logger.error(f"Profile fetch failed for user {user_id}: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 
@@ -438,6 +499,7 @@ def login():
         data = request.get_json()
 
         if not data:
+            logger.warning("Invalid JSON body in login")
             return jsonify({"error": "Invalid JSON body"}), 400
 
         conn = get_db_connection()
@@ -450,12 +512,16 @@ def login():
         conn.close()
 
         if not user:
+            logger.warning("Invalid credentials in login")
             return jsonify({"error": "Invalid credentials"}), 401
 
         if not check_password_hash(user["password_hash"], data["password"]):
+            logger.warning("Invalid credentials in login")
             return jsonify({"error": "Invalid credentials"}), 401
 
         token = generate_token(user["user_id"])
+
+        logger.info(f"User logged in: {user['user_id']}")
 
         return jsonify({
             "message": "Login successful",
@@ -463,7 +529,9 @@ def login():
         }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        username = data.get("username", "unknown") if data else "unknown"
+        logger.error(f"Login failed for username={username}: {str(e)}")
+        return jsonify({"error":"Internal server error"}), 500
 
 
 
@@ -486,13 +554,16 @@ def logout():
         cursor.execute("INSERT INTO token_blacklist (jti, expires_at) VALUES (%s, %s)", (jti, expires_at))
 
         conn.commit()
+        logger.info(f"User logged out: {request.user_id}")
         cursor.close()
         conn.close()
 
         return jsonify({"message": "Logout successful"}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        user_id = getattr(request, "user_id", "unknown")
+        logger.error(f"Logout failed for user {user_id}: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 
@@ -514,6 +585,7 @@ def create_group():
         data = request.get_json()
 
         if not data:
+            logger.warning("Invalid JSON body in create-group")
             return jsonify({"error": "Invalid JSON body"}), 400
 
         user_id = request.user_id
@@ -525,6 +597,7 @@ def create_group():
         description = data.get("description")
 
         if not group_name or not destination:
+            logger.warning(f"Missing group_name or destination by user {user_id}")
             return jsonify({"error": "group_name and destination required"}), 400
         
         if len(group_name) > 100 or (description and len(description) > 500) or len(destination) > 100:
@@ -535,6 +608,7 @@ def create_group():
                 return jsonify({"error": "Invalid travel month"}), 400
         
         if not isinstance(max_members, int):
+            logger.warning(f"Invalid max_members type from user {user_id}: {max_members}")
             return jsonify({"error": "max_members must be integer"}), 400
         
         if max_members is not None and (max_members < 2 or max_members > 10):
@@ -552,6 +626,7 @@ def create_group():
             longitude = location.longitude
 
         except (GeocoderTimedOut, GeocoderServiceError):
+            logger.error(f"Geocoding failed for destination '{destination}'")
             return jsonify({"error": "Geocoding service unavailable"}), 503
 
 
@@ -581,13 +656,16 @@ def create_group():
         cursor.execute("""INSERT INTO group_members (group_id, user_id, role) VALUES (%s,%s,'admin')""",(group_id,user_id))
 
         conn.commit()
+        logger.info(f"Group created: {group_name} by user {user_id}, group_id={group_id}")
         cursor.close()
         conn.close()
 
         return jsonify({"message":"Group created","group_id": group_id}), 201
 
     except Exception as e:
-        return jsonify({"error":str(e)}), 500
+        user_id = getattr(request, "user_id", "unknown")
+        logger.error(f"Create group failed for user {user_id}: {str(e)}")
+        return jsonify({"error":"Internal server error"}), 500
 
 
 
@@ -598,12 +676,14 @@ def join_group():
         data = request.get_json()
 
         if not data:
+            logger.warning("Invalid JSON body in join-group")
             return jsonify({"error": "Invalid JSON body"}), 400
 
         user_id = request.user_id
         group_id = data.get("group_id", "").strip()
 
         if not group_id:
+            logger.warning(f"group_id missing in join_group by user {request.user_id}")
             return jsonify({"error": "group_id required"}), 400
 
 
@@ -617,6 +697,7 @@ def join_group():
         if not group:
             cursor.close()
             conn.close()
+            logger.warning(f"Group not found: {group_id}")
             return jsonify({"error": "Group not found"}), 404
 
         # check if already member
@@ -662,13 +743,17 @@ def join_group():
         cursor.execute("""INSERT INTO group_join_requests (request_id, group_id, user_id) VALUES (%s,%s,%s)""",(request_id, group_id, user_id))
         
         conn.commit()
+        logger.info(f"Join request sent: user {user_id} -> group {group_id}")
         cursor.close()
         conn.close()
 
         return jsonify({"message": "Join request sent"}), 200
 
     except Exception as e:
-        return jsonify({"error":str(e)}), 500
+        user_id = getattr(request, "user_id", "unknown")
+        group_id = locals().get("group_id", "unknown")
+        logger.error(f"Join group failed for user {user_id} group {group_id}: {str(e)}")
+        return jsonify({"error":"Internal server error"}), 500
 
 
 
@@ -679,6 +764,7 @@ def update_group():
         data = request.get_json()
 
         if not data:
+            logger.warning("Invalid JSON body in update-group")
             return jsonify({"error": "Invalid JSON body"}), 400
 
         user_id = request.user_id
@@ -690,6 +776,7 @@ def update_group():
         max_members = data.get("max_members")
 
         if not group_id:
+            logger.warning(f"group_id missing in update_group by user {user_id}")
             return jsonify({"error": "group_id required"}), 400
 
         if group_name is not None:
@@ -724,6 +811,7 @@ def update_group():
         role = cursor.fetchone()
 
         if not role or role["role"] != "admin":
+            logger.warning(f"Unauthorized action by user {user_id} on group {group_id}")
             return jsonify({"error": "Only admin can update group"}), 403
         
         if max_members is not None:
@@ -753,6 +841,7 @@ def update_group():
                 longitude = location.longitude
 
             except (GeocoderTimedOut, GeocoderServiceError):
+                logger.error(f"Geocoding failed for destination '{destination}'")
                 cursor.close()
                 conn.close()
                 return jsonify({"error": "Geocoding service unavailable"}), 503
@@ -765,13 +854,17 @@ def update_group():
 
 
         conn.commit()
+        logger.info(f"Group updated: {group_id} by admin {user_id}")
         cursor.close()
         conn.close()
 
         return jsonify({"message": "Group updated"}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        user_id = getattr(request, "user_id", "unknown")
+        group_id = locals().get("group_id", "unknown")
+        logger.error(f"Update group failed for group {group_id} by user {user_id}: {str(e)}")
+        return jsonify({"error":"Internal server error"}), 500
 
 
 
@@ -782,6 +875,7 @@ def delete_group():
         data = request.get_json()
 
         if not data:
+            logger.warning("Invalid JSON body in delete-group")
             return jsonify({"error": "Invalid JSON body"}), 400
 
 
@@ -789,6 +883,7 @@ def delete_group():
         group_id = data.get("group_id")
 
         if not group_id:
+            logger.warning(f"group_id missing in delete_group by user {user_id}")
             return jsonify({"error": "group_id required"}), 400
 
         conn = get_db_connection()
@@ -798,12 +893,14 @@ def delete_group():
         if not cursor.fetchone():
             cursor.close()
             conn.close()
+            logger.warning(f"Group not found: {group_id}")
             return jsonify({"error": "Group not found"}), 404
 
         cursor.execute("""SELECT role FROM group_members WHERE group_id=%s AND user_id=%s """,(group_id,user_id))
         role = cursor.fetchone()
 
         if not role or role["role"] != "admin":
+            logger.warning(f"Unauthorized action by user {user_id} on group {group_id}")
             return jsonify({"error":"Only admin can delete group"}), 403
 
         # conn.start_transaction()
@@ -812,13 +909,17 @@ def delete_group():
 
 
         conn.commit()
+        logger.info(f"Group deleted: {group_id} by admin {user_id}")
         cursor.close()
         conn.close()
 
         return jsonify({"message":"Group deleted"}), 200
 
     except Exception as e:
-        return jsonify({"error":str(e)}), 500
+        user_id = getattr(request, "user_id", "unknown")
+        group_id = locals().get("group_id", "unknown")
+        logger.error(f"Delete group failed for group {group_id} by user {user_id}: {str(e)}")
+        return jsonify({"error":"Internal server error"}), 500
 
 
 
@@ -855,11 +956,13 @@ def get_groups():
 
         cursor.close()
         conn.close()
-
+        logger.info(f"Groups fetched for user {user_id}")
         return jsonify({"groups": groups or []}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        user_id = getattr(request, "user_id", "unknown")
+        logger.error(f"Group fetch failed for user {user_id}: {str(e)}")
+        return jsonify({"error":"Internal server error"}), 500
 
 
 
@@ -870,6 +973,7 @@ def allow_request():
         data = request.get_json()
 
         if not data:
+            logger.warning("Invalid JSON body in group-allow")
             return jsonify({"error": "Invalid JSON body"}), 400
 
         admin_id = request.user_id
@@ -877,6 +981,7 @@ def allow_request():
         target_user_id = data.get("user_id")
 
         if not group_id or not target_user_id:
+            logger.warning(f"group_id and user_id missing in group-allow by admin {admin_id}")
             return jsonify({"error": "group_id and user_id required"}), 400
 
         conn = get_db_connection()
@@ -888,6 +993,7 @@ def allow_request():
         if not role or role["role"] != "admin":
             cursor.close()
             conn.close()
+            logger.warning(f"Unauthorized action by user on group {group_id}")
             return jsonify({"error": "Only admin allowed"}), 403
 
         # check group capacity
@@ -897,6 +1003,7 @@ def allow_request():
         if not group:
             cursor.close()
             conn.close()
+            logger.warning(f"Group not found: {group_id}")
             return jsonify({"error": "Group not found"}), 404
 
         if group["members"] >= group["max_members"]:
@@ -937,15 +1044,19 @@ def allow_request():
         conn.commit()
         cursor.close()
         conn.close()
-
+        logger.info(f"User {target_user_id} approved for group {group_id} by admin {admin_id}")
         return jsonify({"message": "User approved"}), 200
 
     except Exception as e:
+        admin_id = getattr(request, "user_id", "unknown")
+        group_id = locals().get("group_id", "unknown")
+        logger.error(f"Approve request failed for group {group_id} by admin {admin_id}: {str(e)}")
+        
         try:
             conn.rollback()
         except:
             pass
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 
@@ -956,6 +1067,7 @@ def reject_request():
         data = request.get_json()
 
         if not data:
+            logger.warning("Invalid JSON body in group-reject")
             return jsonify({"error": "Invalid JSON body"}), 400
 
         admin_id = request.user_id
@@ -964,6 +1076,7 @@ def reject_request():
         target_user_id = data.get("user_id")
 
         if not group_id or not target_user_id:
+            logger.warning(f"group_id and user_id missing in group-reject by admin {admin_id}")
             return jsonify({"error": "group_id and user_id required"}), 400
 
         conn = get_db_connection()
@@ -974,6 +1087,7 @@ def reject_request():
         if not cursor.fetchone():
             cursor.close()
             conn.close()
+            logger.warning(f"Group not found: {group_id}")
             return jsonify({"error": "Group not found"}), 404
 
 
@@ -983,6 +1097,7 @@ def reject_request():
         if not role or role["role"] != "admin":
             cursor.close()
             conn.close()
+            logger.warning(f"Unauthorized action by user on group {group_id}")
             return jsonify({"error": "Only admin allowed"}), 403
         
 
@@ -1004,17 +1119,21 @@ def reject_request():
         cursor.execute("""UPDATE group_join_requests SET status='rejected' WHERE group_id=%s AND user_id=%s """, (group_id, target_user_id))
 
         conn.commit()
+        logger.info(f"User {target_user_id} rejected from group {group_id} by admin {admin_id}")
         cursor.close()
         conn.close()
 
         return jsonify({"message": "Request rejected"}), 200
 
     except Exception as e:
+        admin_id = getattr(request, "user_id", "unknown")
+        group_id = locals().get("group_id", "unknown")
+        logger.error(f"Reject request failed for group {group_id} by admin {admin_id}: {str(e)}")
         try:
             conn.rollback()
         except:
             pass
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 
@@ -1025,12 +1144,14 @@ def leave():
         data = request.get_json()
 
         if not data:
+            logger.warning("Invalid JSON body in group-leave")
             return jsonify({"error": "Invalid JSON body"}), 400
 
         user_id = request.user_id
         group_id = data.get("group_id")
 
         if not group_id:
+            logger.warning(f"group_id missing in group-leave by user {user_id}")
             return jsonify({"error": "group_id required"}), 400
 
         conn = get_db_connection()
@@ -1041,6 +1162,7 @@ def leave():
         if not cursor.fetchone():
             cursor.close()
             conn.close()
+            logger.warning(f"Group not found: {group_id}")
             return jsonify({"error": "Group not found"}), 404
 
         # check membership
@@ -1068,17 +1190,21 @@ def leave():
         cursor.execute("""DELETE FROM group_join_requests WHERE group_id=%s AND user_id=%s """, (group_id, user_id))
 
         conn.commit()
+        logger.info(f"User {user_id} left group {group_id}")
         cursor.close()
         conn.close()
 
         return jsonify({"message": "Left group successfully"}), 200
 
     except Exception as e:
+        user_id = getattr(request, "user_id", "unknown")
+        group_id = locals().get("group_id", "unknown")
+        logger.error(f"Leave group failed for user {user_id} group {group_id}: {str(e)}")
         try:
             conn.rollback()
         except:
             pass
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 # list the join requests
@@ -1090,6 +1216,7 @@ def group_requests():
         group_id = request.args.get("group_id")
 
         if not group_id:
+            logger.warning(f"group_id missing in group-requests by user {admin_id} ")
             return jsonify({"error": "group_id required"}), 400
 
         conn = get_db_connection()
@@ -1100,6 +1227,7 @@ def group_requests():
         if not cursor.fetchone():
             cursor.close()
             conn.close()
+            logger.warning(f"Group not found: {group_id}")
             return jsonify({"error": "Group not found"}), 404
 
         # verify admin
@@ -1110,6 +1238,7 @@ def group_requests():
         if not role or role["role"] != "admin":
             cursor.close()
             conn.close()
+            logger.warning(f"Unauthorized action by user on group {group_id}")
             return jsonify({"error": "Only admin allowed"}), 403
 
 
@@ -1122,11 +1251,14 @@ def group_requests():
 
         cursor.close()
         conn.close()
-
+        logger.info(f"Join requests fetched for group {group_id} by admin {admin_id}")
         return jsonify({"group_id": group_id, "pending_requests": requests or []}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        admin_id = getattr(request, "user_id", "unknown")
+        group_id = locals().get("group_id", "unknown")
+        logger.error(f"Fetch join requests failed for group {group_id} by admin {admin_id}: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 
@@ -1142,6 +1274,7 @@ def send_private_message():
         data = request.get_json()
 
         if not data:
+            logger.warning("Invalid JSON body in chat-send")
             return jsonify({"error": "Invalid JSON body"}), 400
 
         sender_id = request.user_id
@@ -1177,17 +1310,21 @@ def send_private_message():
         cursor.execute("""INSERT INTO private_messages (message_id, sender_id, receiver_id, message) VALUES (%s,%s,%s,%s)""", (message_id, sender_id, receiver_id, message))
 
         conn.commit()
+        logger.info(f"Private message sent from {sender_id} to {receiver_id}")
         cursor.close()
         conn.close()
 
         return jsonify({"message": "Message sent"}), 200
 
     except Exception as e:
+        sender_id = getattr(request, "user_id", "unknown")
+        receiver_id = locals().get("receiver_id", "unknown")
+        logger.error(f"Private message failed from {sender_id} to {receiver_id}: {str(e)}")
         try:
             conn.rollback()
         except:
             pass
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 
@@ -1199,6 +1336,7 @@ def get_private_messages():
         other_user = request.args.get("user_id")
 
         if not other_user:
+            logger.warning(f"user_id missing in chat-messages by user {user_id}")
             return jsonify({"error": "user_id required"}), 400
 
         conn = get_db_connection()
@@ -1210,11 +1348,14 @@ def get_private_messages():
 
         cursor.close()
         conn.close()
-
+        logger.info(f"Messages fetched between {user_id} and {other_user}")
         return jsonify({"messages": messages}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        user_id = getattr(request, "user_id", "unknown")
+        other_user = locals().get("other_user", "unknown")
+        logger.error(f"Fetch messages failed between {user_id} and {other_user}: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 
@@ -1237,6 +1378,7 @@ def unread_messages():
 
         cursor.close()
         conn.close()
+        logger.info(f"Unread messages fetched for user {user_id}")
 
         return jsonify({
             "total_unread": total_unread,
@@ -1244,7 +1386,9 @@ def unread_messages():
         }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        user_id = getattr(request, "user_id", "unknown")
+        logger.error(f"Unread fetch failed for user {user_id}: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 
@@ -1255,12 +1399,14 @@ def mark_chat_read():
         data = request.get_json()
 
         if not data:
+            logger.warning("Invalid JSON body in chat-read")
             return jsonify({"error": "Invalid JSON body"}), 400
 
         receiver_id = request.user_id
         sender_id = data.get("user_id")
 
         if not sender_id:
+            logger.warning(f"user_id missing in chat-read by user {receiver_id}")
             return jsonify({"error": "user_id required"}), 400
 
 
@@ -1272,17 +1418,21 @@ def mark_chat_read():
         cursor.execute("""UPDATE private_messages SET is_read = TRUE WHERE receiver_id = %s AND sender_id = %s AND is_read = FALSE""", (receiver_id, sender_id))
 
         conn.commit()
+        logger.info(f"Messages marked read for user {receiver_id} from {sender_id}")
         cursor.close()
         conn.close()
 
         return jsonify({"message": "Messages marked as read"}), 200
 
     except Exception as e:
+        receiver_id = getattr(request, "user_id", "unknown")
+        sender_id = locals().get("sender_id", "unknown")
+        logger.error(f"Mark read failed for user {receiver_id} from {sender_id}: {str(e)}")
         try:
             conn.rollback()
         except:
             pass
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 
@@ -1295,6 +1445,7 @@ def send_group_message():
         data = request.get_json()
 
         if not data:
+            logger.warning("Invalid JSON body in group-chat-send")
             return jsonify({"error": "Invalid JSON body"}), 400
 
         user_id = request.user_id
@@ -1325,17 +1476,21 @@ def send_group_message():
         cursor.execute("""INSERT INTO group_messages (message_id, group_id, sender_id, message) VALUES (%s,%s,%s,%s) """, (message_id, group_id, user_id, message))
 
         conn.commit()
+        logger.info(f"Group message sent in {group_id} by user {user_id}")
         cursor.close()
         conn.close()
 
         return jsonify({"message": "Message sent"}), 200
 
     except Exception as e:
+        user_id = getattr(request, "user_id", "unknown")
+        group_id = locals().get("group_id", "unknown")
+        logger.error(f"Group message failed in group {group_id} by user {user_id}: {str(e)}")
         try:
             conn.rollback()
         except:
             pass
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 
@@ -1347,6 +1502,7 @@ def get_group_messages():
         group_id = request.args.get("group_id")
 
         if not group_id:
+            logger.warning(f"group_id missing in group-chat")
             return jsonify({"error": "group_id required"}), 400
 
         conn = get_db_connection()
@@ -1366,11 +1522,15 @@ def get_group_messages():
 
         cursor.close()
         conn.close()
+        logger.info(f"Group messages fetched for group {group_id} by user {user_id}")
 
         return jsonify({"messages": messages}), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        user_id = getattr(request, "user_id", "unknown")
+        group_id = locals().get("group_id", "unknown")
+        logger.error(f"Fetch group messages failed for group {group_id} by user {user_id}: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 ''' ========== model ============== '''
@@ -1384,12 +1544,14 @@ def recommend():
         data = request.get_json()
 
         if not data:
+            logger.warning("Invalid JSON body in recommend")
             return jsonify({"error": "Invalid JSON body"}), 400
 
         user_id = request.user_id   # from jwt
         top_n = data.get("top_n", 5)
         # type check
         if not isinstance(top_n, int):
+            logger.warning(f"Invalid top_n type in recommend")
             return jsonify({"error": "top_n must be an integer"}), 400
 
         # range check
@@ -1412,6 +1574,8 @@ def recommend():
 
         # call model
         results = recommender.recommend(user_id = user_id, top_n = int(top_n)) or []
+        
+        logger.info(f"Recommendations generated for user {user_id}, top_n={top_n}")
 
         if not results:
             return jsonify({"recommendations": []})
@@ -1419,6 +1583,8 @@ def recommend():
         return jsonify({ "user_id": user_id, "recommendations": results })
 
     except Exception as e:
+        user_id = getattr(request, "user_id", "unknown")
+        logger.error(f"Recommendation failed for user {user_id}: {str(e)}")
         return jsonify({ "error" : str(e) }), 500
 
 
