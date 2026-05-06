@@ -1,0 +1,597 @@
+openapi: 3.2.0
+info:
+  title: Travel Companion Finder System
+  description: API documentation for travel companion recommendation system
+  version: 1.3.0
+
+servers:
+  - url: http://127.0.0.1:5000/api
+    description: Server
+
+tags:
+  - name: Account
+  - name: Authentication
+  - name: Recommendations
+  - name: Groups
+  - name: Chat
+
+paths:
+
+  /create-account:
+    post:
+      tags: [Account]
+      summary: Create a new user account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAccountRequest'
+      responses:
+        "201":
+          description: Account created
+        "400":
+          description: Validation error
+        "409":
+          description: Username exists
+
+  /update-account:
+    put:
+      tags: [Account]
+      summary: Update user profile
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAccountRequest'
+      responses:
+        "200":
+          description: Profile updated
+
+  /delete-account:
+    delete:
+      tags: [Account]
+      summary: Delete user profile
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Account deleted
+
+  /profile:
+    get:
+      tags: [Account]
+      summary: Get your profile
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfile'
+
+  /login:
+    post:
+      tags: [Authentication]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        "200":
+          description: Login success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        "401":
+          description: Invalid credentials
+
+  /logout:
+    get:
+      tags: [Authentication]
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Logout success
+
+  /recommend/user:
+    post:
+      tags: [Recommendations]
+      summary: Recommend similar users
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecommendationRequest'
+      responses:
+        "200":
+          description: Recommendations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecommendationResponse'
+
+  /recommend/group:
+    get:
+      tags: [Recommendations]
+      summary: Recommend travel groups based on similar users
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Recommended groups
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id:
+                    type: string
+                  groups:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        group_id: { type: string }
+                        group_name: { type: string }
+                        destination: { type: string }
+                        travel_month: { type: integer }
+                        description: { type: string }
+                        max_members: { type: integer }
+                        admin: { type: string }
+                        current_members: { type: integer }
+                        score:
+                          type: number
+                          format: float
+        "401":
+          description: Unauthorized (missing or invalid token)
+        "404":
+          description: User not found
+        "500":
+          description: Internal server error 
+
+  /groups:
+    get:
+      tags: [Groups]
+      summary: List travel group
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: List groups
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupsResponse'
+
+  /create-group:
+    post:
+      tags: [Groups]
+      summary: Create travel group
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGroupRequest'
+      responses:
+        "201":
+          description: Group created
+
+  /join-group:
+    post:
+      tags: [Groups]
+      summary: Join travel group
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JoinGroupRequest'
+      responses:
+        "200":
+          description: Join request sent
+
+  /update-group:
+    put:
+      tags: [Groups]
+      summary: Update your travel group
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateGroupRequest'
+      responses:
+        "200":
+          description: Group updated
+
+  /delete-group:
+    delete:
+      tags: [Groups]
+      summary: Delete your travel group
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteGroupRequest'
+      responses:
+        "200":
+          description: Group deleted
+
+  /group/allow:
+    post:
+      tags: [Groups]
+      summary: Allow user to join your travel group
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupModerationRequest'
+      responses:
+        "200":
+          description: Approved
+
+  /group/reject:
+    post:
+      tags: [Groups]
+      summary: Reject user to join your travel group
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupModerationRequest'
+      responses:
+        "200":
+          description: Rejected
+
+  /group/leave:
+    post:
+      tags: [Groups]
+      summary: Leave joined group
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LeaveGroupRequest'
+      responses:
+        "200":
+          description: Left group
+
+  /group/requests:
+    get:
+      tags: [Groups]
+      summary: List join request of your group
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: group_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Pending requests
+
+  /chat/send:
+    post:
+      tags: [Chat]
+      summary: Chat with user
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        "200":
+          description: Sent
+
+  /chat/messages:
+    get:
+      tags: [Chat]
+      summary: List private chats
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Messages
+
+  /chat/unread:
+    get:
+      tags: [Chat]
+      summary: List unread private chat
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Unread messages
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnreadResponse'
+
+  /chat/read:
+    post:
+      tags: [Chat]
+      summary: Read unread chats
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarkReadRequest'
+      responses:
+        "200":
+          description: Marked read
+
+  /group/chat/send:
+    post:
+      tags: [Chat]
+      summary: Send chat to a group
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupMessageRequest'
+      responses:
+        "200":
+          description: Sent
+
+  /group/chat:
+    get:
+      tags: [Chat]
+      summary: List group chats
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: group_id
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Group messages
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+
+    CreateAccountRequest:
+      type: object
+      required:
+        - username
+        - password
+        - age
+        - budget
+        - beach
+        - trekking
+        - culture
+        - adventure
+        - travel_month
+        - destination
+      properties:
+        username: { type: string }
+        password: { type: string }
+        age: { type: integer }
+        budget: { type: integer }
+        beach: { type: integer }
+        trekking: { type: integer }
+        culture: { type: integer }
+        adventure: { type: integer }
+        travel_month: { type: integer }
+        destination: { type: string }
+        pfp:
+          type: string
+          description: Profile picture (temporary string, e.g., base64 or URL)
+        
+
+    UpdateAccountRequest:
+      type: object
+      properties:
+        age: { type: integer }
+        budget: { type: integer }
+        beach: { type: integer }
+        trekking: { type: integer }
+        culture: { type: integer }
+        adventure: { type: integer }
+        travel_month: { type: integer }
+        destination: { type: string }
+        pfp:
+          type: string
+          description: profile picture (temporary string storage)
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string }
+        password: { type: string }
+
+    LoginResponse:
+      type: object
+      properties:
+        message: { type: string }
+        token: { type: string }
+
+    UserProfile:
+      type: object
+      properties:
+        user_id: { type: string }
+        username: { type: string }
+        pfp: { type: string }
+        age: { type: integer }
+        budget: { type: integer }
+        beach: { type: integer }
+        trekking: { type: integer }
+        culture: { type: integer }
+        adventure: { type: integer }
+        travel_month: { type: integer }
+        destination: { type: string }
+        created_at: { type: string }
+
+    RecommendationRequest:
+      type: object
+      properties:
+        top_n:
+          type: integer
+          default: 5
+
+    RecommendationResponse:
+      type: object
+      properties:
+        user_id: { type: string }
+        recommendations:
+          type: array
+          items:
+            type: object
+
+    GroupsResponse:
+      type: object
+      properties:
+        groups:
+          type: array
+          items:
+            type: object
+            properties:
+              group_id: { type: string }
+              group_name: { type: string }
+              destination: { type: string }
+              travel_month: { type: integer }
+              description: { type: string }
+              max_members: { type: integer }
+              admin: { type: string }
+              current_members: { type: integer }
+              joined: { type: integer }
+              request_pending: { type: integer }
+
+    UnreadResponse:
+      type: object
+      properties:
+        total_unread:
+          type: integer
+        conversations:
+          type: array
+          items:
+            type: object
+            properties:
+              user_id: { type: string }
+              username: { type: string }
+              unread: { type: integer }
+
+    CreateGroupRequest:
+      type: object
+      required: [group_name, destination]
+      properties:
+        group_name: { type: string }
+        destination: { type: string }
+        description: { type: string }
+        travel_month: { type: integer }
+        max_members: { type: integer }
+
+    JoinGroupRequest:
+      type: object
+      required: [group_id]
+      properties:
+        group_id: { type: string }
+
+    UpdateGroupRequest:
+      type: object
+      required: [group_id]
+      properties:
+        group_id: { type: string }
+        group_name: { type: string }
+        description: { type: string }
+        destination: { type: string }
+        travel_month: { type: integer }
+        max_members: { type: integer }
+
+    DeleteGroupRequest:
+      type: object
+      required: [group_id]
+      properties:
+        group_id: { type: string }
+
+    LeaveGroupRequest:
+      type: object
+      required: [group_id]
+      properties:
+        group_id: { type: string }
+
+    GroupModerationRequest:
+      type: object
+      required: [group_id, user_id]
+      properties:
+        group_id: { type: string }
+        user_id: { type: string }
+
+    SendMessageRequest:
+      type: object
+      required: [receiver_id, message]
+      properties:
+        receiver_id: { type: string }
+        message: { type: string }
+
+    MarkReadRequest:
+      type: object
+      required: [user_id]
+      properties:
+        user_id: { type: string }
+
+    GroupMessageRequest:
+      type: object
+      required: [group_id, message]
+      properties:
+        group_id: { type: string }
+        message: { type: string }

@@ -1,0 +1,281 @@
+{
+  "info": {
+    "_postman_id": "bb5d1072-0e00-4d31-a825-c01ba2ca1c87",
+    "name": "Travel Companion Finder API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8080/api"
+    },
+    {
+      "key": "token",
+      "value": ""
+    }
+  ],
+  "item": [
+
+    {
+      "name": "Account",
+      "item": [
+        {
+          "name": "Create Account",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"pikachu\",\n  \"password\": \"123456\",\n  \"age\": 22,\n  \"budget\": 5000,\n  \"beach\": 1,\n  \"trekking\": 0,\n  \"culture\": 1,\n  \"adventure\": 1,\n  \"travel_month\": 6,\n  \"destination\": \"Goa\",\n  \"pfp\": \"https://example.com/pfp.jpg\"\n}"
+            },
+            "url": "{{base_url}}/create-account"
+          }
+        },
+        {
+          "name": "Update Account",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"age\": 23,\n  \"budget\": 7000,\n  \"beach\": 1,\n  \"trekking\": 1,\n  \"culture\": 1,\n  \"adventure\": 1,\n  \"travel_month\": 7,\n  \"destination\": \"Manali\",\n  \"pfp\": \"https://example.com/new.jpg\"\n}"
+            },
+            "url": "{{base_url}}/update-account"
+          }
+        },
+        {
+          "name": "Delete Account",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "DELETE",
+            "url": "{{base_url}}/delete-account"
+          }
+        },
+        {
+          "name": "Get Profile",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "GET",
+            "url": "{{base_url}}/profile"
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"pikachu\",\n  \"password\": \"123456\"\n}"
+            },
+            "url": "{{base_url}}/login"
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "GET",
+            "url": "{{base_url}}/logout"
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Recommendations",
+      "item": [
+        {
+          "name": "Recommend Users",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"top_n\": 5\n}"
+            },
+            "url": "{{base_url}}/recommend/user"
+          }
+        },
+        {
+          "name": "Recommend Groups",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "GET",
+            "url": "{{base_url}}/recommend/group"
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Groups",
+      "item": [
+        {
+          "name": "Get Groups",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "GET",
+            "url": "{{base_url}}/groups"
+          }
+        },
+        {
+          "name": "Create Group",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"group_name\": \"Goa Trip\",\n  \"destination\": \"Goa\",\n  \"travel_month\": 6,\n  \"description\": \"Beach trip\",\n  \"max_members\": 4\n}"
+            },
+            "url": "{{base_url}}/create-group"
+          }
+        },
+        {
+          "name": "Join Group",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"group_id\": \"GROUP_ID\"\n}"
+            },
+            "url": "{{base_url}}/join-group"
+          }
+        },
+        {
+          "name": "Update Group",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"group_id\": \"GROUP_ID\",\n  \"group_name\": \"Updated\",\n  \"description\": \"Updated desc\"\n}"
+            },
+            "url": "{{base_url}}/update-group"
+          }
+        },
+        {
+          "name": "Delete Group",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "DELETE",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"group_id\": \"GROUP_ID\"\n}"
+            },
+            "url": "{{base_url}}/delete-group"
+          }
+        },
+        {
+          "name": "Allow Request",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"group_id\": \"GROUP_ID\",\n  \"user_id\": \"USER_ID\"\n}"
+            },
+            "url": "{{base_url}}/group/allow"
+          }
+        },
+        {
+          "name": "Reject Request",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"group_id\": \"GROUP_ID\",\n  \"user_id\": \"USER_ID\"\n}"
+            },
+            "url": "{{base_url}}/group/reject"
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Chat",
+      "item": [
+        {
+          "name": "Send Message",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"receiver_id\": \"USER_ID\",\n  \"message\": \"Hello\"\n}"
+            },
+            "url": "{{base_url}}/chat/send"
+          }
+        },
+        {
+          "name": "Get Messages",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "GET",
+            "url": "{{base_url}}/chat/messages?user_id=USER_ID"
+          }
+        },
+        {
+          "name": "Unread Messages",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "GET",
+            "url": "{{base_url}}/chat/unread"
+          }
+        },
+        {
+          "name": "Mark Read",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": \"USER_ID\"\n}"
+            },
+            "url": "{{base_url}}/chat/read"
+          }
+        },
+        {
+          "name": "Send Group Message",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"group_id\": \"GROUP_ID\",\n  \"message\": \"Hello group\"\n}"
+            },
+            "url": "{{base_url}}/group/chat/send"
+          }
+        },
+        {
+          "name": "Get Group Messages",
+          "request": {
+            "auth": { "type": "bearer", "bearer": [{ "key": "token", "value": "{{token}}" }] },
+            "method": "GET",
+            "url": "{{base_url}}/group/chat?group_id=GROUP_ID"
+          }
+        }
+      ]
+    }
+
+  ]
+}

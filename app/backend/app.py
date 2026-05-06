@@ -37,7 +37,8 @@
 - /api/group/chat
 
 [+] model:
-- /api/recommend
+- /api/recommend/user
+- /api/recommend/group
 
 '''
 
@@ -1599,7 +1600,7 @@ def get_group_messages():
 ''' ========== model ============== '''
 
 # recomend top n users
-@app.route("/api/recommend", methods =[ "POST" ])
+@app.route("/api/recommend/user", methods =[ "POST" ])
 @limiter.limit("30 per hour")
 @token_required
 def recommend():
@@ -1671,6 +1672,107 @@ def recommend():
         return jsonify({ "error" : str(e) }), 500
 
 
+# recommend groups
+@app.route("/api/recommend/group", methods =[ "GET" ])
+@limiter.limit("30 per hour")
+@token_required
+def recommend_groups():
+    try:
+        user_id = request.user_id
+        TOP_USERS = 20
+        TOP_GROUPS = 15
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary = True)
+
+        # verify user
+        cursor.execute("SELECT 1 FROM users WHERE user_id=%s", (user_id,))
+        if not cursor.fetchone():
+            return jsonify({"error": "User not found"}), 404
+
+        # get similar users
+        similar_users = recommender.recommend(user_id = user_id, top_n = TOP_USERS)
+
+        if not similar_users:
+            return jsonify({"groups": []}), 200
+
+        # build score map
+        score_map = {u["user_id"]: u["score"] for u in similar_users}
+        user_ids = list(score_map.keys())
+
+        if not user_ids:
+            return jsonify({"groups": []}), 200
+
+        user_placeholders = ",".join(["%s"] * len(user_ids))
+
+        cursor.execute(f"""SELECT gm.group_id, gm.user_id FROM group_members gm WHERE gm.user_id IN ({user_placeholders})""", tuple(user_ids))
+
+        group_scores = {}
+
+        for row in cursor.fetchall():
+            gid = row["group_id"]
+            uid = row["user_id"]
+
+            group_scores[gid] = group_scores.get(gid, 0) + score_map.get(uid, 0)
+
+        if not group_scores:
+            return jsonify({"groups": []}), 200
+
+        group_ids = list(group_scores.keys())
+        group_placeholders = ",".join(["%s"] * len(group_ids))
+
+        cursor.execute(f"""
+            SELECT 
+                g.group_id,
+                g.group_name,
+                g.destination,
+                g.travel_month,
+                g.description,
+                g.max_members,
+                u.username AS admin,
+                COUNT(m.user_id) AS current_members,
+                MAX(CASE WHEN m.user_id = %s THEN 1 ELSE 0 END) AS already_joined
+            FROM travel_groups g
+            LEFT JOIN group_members m ON g.group_id = m.group_id
+            LEFT JOIN users u ON g.created_by = u.user_id
+            WHERE g.group_id IN ({group_placeholders})
+            GROUP BY 
+                g.group_id, g.group_name, g.destination, g.travel_month,
+                g.description, g.max_members, u.username
+        """, (user_id, *group_ids))
+
+        results = []
+
+        for g in cursor.fetchall():
+            if g["already_joined"]:
+                continue
+
+            if g["current_members"] >= g["max_members"]:
+                continue
+
+            g["score"] = float(group_scores.get(g["group_id"], 0))
+            results.append(g)
+
+        # sort + limit
+        results = sorted(results, key = lambda x: x["score"], reverse = True)[:TOP_GROUPS]
+
+        logger.info(f"Group recommendations generated for user {user_id}")
+
+        return jsonify({
+            "user_id": user_id,
+            "groups": results
+        }), 200
+
+    except Exception as e:
+        user_id = getattr(request, "user_id", "unknown")
+        logger.error(f"Group recommendation failed for user {user_id}: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 
 @app.route("/")

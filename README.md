@@ -50,6 +50,7 @@ The backend exposes REST APIs for authentication, user management, group managem
 ### 5. Recommendation System
 - Hybrid recommendation engine
 - Suggests users with similar travel interests
+- Suggests groups with similar travel interests
 
 ---
 
@@ -149,13 +150,29 @@ OPENTRIPMAP_KEY=your_api_key
 - `GET /api/group/chat`
 
 ### Recommendation
-- `POST /api/recommend`
+- `POST /api/recommend/user`
+- `GET /api/recommend/group`
 
 ---
 
 ## How to Run
 
 1. Create an `.env` file in the `/backend` and add the required [environment variables](#environment-variables)  
+
+2. Set your credentials in `docker-compose.yml` 
+    
+```sh
+# set creds
+environment:
+MYSQL_ROOT_PASSWORD: "1234!"
+MYSQL_DATABASE: travel
+MYSQL_USER: user
+MYSQL_PASSWORD: "1234!"
+    
+# pass
+healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p1234! || exit 1"]
+```  
 
 2. Start the Containers:  
 
@@ -175,6 +192,35 @@ docker-compose down -v
     - Frontend: `http://localhost`
     - Backend: `http://localhost:5000`
 
+
+### Develope backend
+
+<b>env</b>
+
+```sh
+# env
+python3 -m venv venv
+
+source venv/bin/activate
+
+pip3 install -r requirements.txt
+```  
+
+<b>database</b>
+
+```sh 
+# set your own creds
+mysql -u $username -p < main.sql
+```
+
+<b>run</b>
+
+```sh
+python3 app.py
+```  
+
+Docs: [swagger](docs/swagger.yml)  
+Test: [postman](docs/postman_collection.json)  
 
 
 ## License
